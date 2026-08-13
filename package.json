@@ -1,0 +1,43 @@
+{
+  "name": "thread-investigation-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "postinstall": "pnpm --filter @thread/api exec tsx src/ensure-node-pty.ts",
+    "atlas:up": "docker compose up -d --wait",
+    "atlas:down": "docker compose down",
+    "atlas:logs": "docker compose logs -f atlas-local",
+    "atlas:check": "docker compose ps && docker exec thread-atlas-local mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'",
+    "dev:local": "pnpm atlas:up && pnpm dev",
+    "dev": "concurrently --kill-others-on-fail --names api,web --prefix-colors red,cyan \"pnpm --filter @thread/api dev\" \"pnpm --filter @thread/web dev\"",
+    "build": "pnpm --filter @thread/domain build && pnpm --filter @thread/api build && pnpm --filter @thread/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @thread/domain test && pnpm --filter @thread/api test && pnpm --filter @thread/web test",
+    "test:e2e": "playwright test",
+    "test:integrity": "tsx scripts/verify-case-integrity.ts",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify:ci": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:integrity && pnpm build",
+    "verify": "pnpm verify:ci && pnpm test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@playwright/test": "latest",
+    "concurrently": "latest",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "prettier": "latest",
+    "tsx": "latest",
+    "typescript": "6.0.3",
+    "typescript-eslint": "latest"
+  }
+}

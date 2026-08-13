@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+playwright-report
+test-results
+.thread-data
+pnpm-lock.yaml
+compass_artifact_wf-a016a346-bc57-5dcc-913d-95b05149874a_text_markdown.md
+human_readable_plan.md

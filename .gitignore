@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+.thread-data/
+.thread-cache/
+playwright-report/
+test-results/
+*.log
+.DS_Store
