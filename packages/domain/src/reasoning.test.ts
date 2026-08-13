@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { createEmptyCase } from './inference.js';
+import type { CaseState } from './types.js';
 import {
   admiraltyStrength,
   allenRelation,
@@ -267,5 +269,379 @@ describe('THREAD domain invariants', () => {
       inferred: 10,
       unexplained: 20,
     });
+  });
+});
+
+describe('general investigation of a derived question', () => {
+  function baseCase(): CaseState {
+    return createEmptyCase({
+      id: 'case-gen',
+      title: 'General',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+  }
+
+  function placementEdge(input: {
+    id: string;
+    object: string;
+    observationIds: string[];
+    confidence: number;
+  }) {
+    return {
+      id: input.id,
+      caseId: 'case-gen',
+      subjectId: 'E-DANA',
+      predicate: 'OBSERVED_AT' as const,
+      objectId: input.object,
+      confidence: input.confidence,
+      sourceClaimIds: [],
+      sourceObservationIds: input.observationIds,
+      contributions: [],
+      validTime: null,
+      transactionTime: '2026-01-01T00:00:00.000Z',
+      disputed: false,
+      alternatives: [],
+      createdByAgent: 'linker' as const,
+      assumptionIds: [],
+      lenses: ['people' as const],
+    };
+  }
+
+  function observationFrom(id: string, evidenceId: string, text: string) {
+    return {
+      id,
+      caseId: 'case-gen',
+      sourceEvidenceId: evidenceId,
+      kind: 'text' as const,
+      text,
+      locator: 'line 1',
+      extractionConfidence: 1,
+      interval: null,
+      entityIds: [],
+      materialWeight: 1,
+    };
+  }
+
+  it('rescores an open identity and keeps the alternatives', () => {
+    const state = baseCase();
+    state.unresolvedReferences.push({
+      id: 'U-D',
+      caseId: 'case-gen',
+      surfaceForm: 'D',
+      context: '',
+      kindProbabilities: { person: 1 },
+      candidateBindings: [
+        {
+          entityId: 'E-A',
+          label: 'Alice Chen',
+          probability: 0.5,
+          prior: 0.5,
+          signalIds: [],
+        },
+        { entityId: 'E-B', label: 'Bo Marsh', probability: 0.5, prior: 0.5, signalIds: [] },
+      ],
+      resolutionSignals: [
+        {
+          id: 'RS-1',
+          candidateEntityId: 'E-A',
+          evidenceId: 'EV-1',
+          channel: 'social',
+          label: 'shared contact',
+          weight: 1.4,
+        },
+        {
+          id: 'RS-2',
+          candidateEntityId: 'E-A',
+          evidenceId: 'EV-2',
+          channel: 'temporal',
+          label: 'same window',
+          weight: 0.9,
+        },
+      ],
+      status: 'open',
+      resolvedBy: null,
+      sourceEvidenceIds: ['EV-1'],
+    });
+    state.anomalies.push({
+      id: 'AN-U-D',
+      caseId: 'case-gen',
+      question: 'Who is “D”?',
+      category: 'who',
+      detail: 'Two bindings remain open.',
+      expectedInformationGain: 1,
+      status: 'open',
+      relatedIds: ['U-D'],
+      lastResult: null,
+    });
+
+    const result = investigateAnomaly(state, 'AN-U-D', '2026-02-02T00:00:00.000Z');
+    const reference = result.state.unresolvedReferences[0];
+
+    expect(reference?.status).toBe('candidate');
+    expect(reference?.candidateBindings[0]?.label).toBe('Alice Chen');
+    expect(reference?.candidateBindings[0]?.probability).toBeGreaterThan(0.5);
+    // The losing candidate is retained rather than discarded.
+    expect(reference?.candidateBindings).toHaveLength(2);
+    expect(result.state.anomalies[0]?.lastResult).toContain('Alice Chen');
+    expect(result.revision).not.toBeNull();
+  });
+
+  it('weakens the less corroborated side of a contradiction', () => {
+    const state = baseCase();
+    state.observations.push(
+      observationFrom('O-1', 'EV-1', 'Dana at Warehouse A.'),
+      observationFrom('O-2', 'EV-2', 'Dana at Pier 48.'),
+      observationFrom('O-3', 'EV-3', 'Dana at Pier 48 again.'),
+    );
+    state.worldEdges.push(
+      placementEdge({
+        id: 'WE-WAREHOUSE',
+        object: 'E-WAREHOUSE',
+        observationIds: ['O-1'],
+        confidence: 0.7,
+      }),
+      placementEdge({
+        id: 'WE-PIER',
+        object: 'E-PIER',
+        observationIds: ['O-2', 'O-3'],
+        confidence: 0.7,
+      }),
+    );
+    state.beliefs.push({
+      id: 'B-CONTRA-1',
+      caseId: 'case-gen',
+      kind: 'contradiction',
+      label: 'Two placements conflict',
+      detail: 'x',
+      status: 'contested',
+      confidence: 0.7,
+      sourceIds: ['WE-WAREHOUSE', 'WE-PIER'],
+      environments: [[]],
+      survivingEnvironments: [[]],
+    });
+    state.anomalies.push({
+      id: 'AN-B-CONTRA-1',
+      caseId: 'case-gen',
+      question: 'Which placement is wrong?',
+      category: 'where',
+      detail: 'x',
+      expectedInformationGain: 2,
+      status: 'open',
+      relatedIds: ['B-CONTRA-1', 'WE-WAREHOUSE', 'WE-PIER'],
+      lastResult: null,
+    });
+
+    const result = investigateAnomaly(state, 'AN-B-CONTRA-1', '2026-02-02T00:00:00.000Z');
+    const warehouse = result.state.worldEdges.find((edge) => edge.id === 'WE-WAREHOUSE');
+    const pier = result.state.worldEdges.find((edge) => edge.id === 'WE-PIER');
+
+    expect(warehouse?.confidence).toBeLessThan(0.7);
+    expect(warehouse?.disputed).toBe(true);
+    // The better-supported side is not promoted to a fact either.
+    expect(pier?.confidence).toBeLessThanOrEqual(0.95);
+    expect(result.state.anomalies[0]?.lastResult).toMatch(/1 artifact|2 artifacts/);
+  });
+
+  it('refuses to pick a side when nothing separates the two accounts', () => {
+    const state = baseCase();
+    state.observations.push(
+      observationFrom('O-1', 'EV-1', 'Dana at Warehouse A.'),
+      observationFrom('O-2', 'EV-2', 'Dana at Pier 48.'),
+    );
+    state.worldEdges.push(
+      placementEdge({
+        id: 'WE-WAREHOUSE',
+        object: 'E-WAREHOUSE',
+        observationIds: ['O-1'],
+        confidence: 0.7,
+      }),
+      placementEdge({
+        id: 'WE-PIER',
+        object: 'E-PIER',
+        observationIds: ['O-2'],
+        confidence: 0.7,
+      }),
+    );
+    state.beliefs.push({
+      id: 'B-CONTRA-1',
+      caseId: 'case-gen',
+      kind: 'contradiction',
+      label: 'Two placements conflict',
+      detail: 'x',
+      status: 'contested',
+      confidence: 0.7,
+      sourceIds: ['WE-WAREHOUSE', 'WE-PIER'],
+      environments: [[]],
+      survivingEnvironments: [[]],
+    });
+    state.anomalies.push({
+      id: 'AN-B-CONTRA-1',
+      caseId: 'case-gen',
+      question: 'Which placement is wrong?',
+      category: 'where',
+      detail: 'x',
+      expectedInformationGain: 2,
+      status: 'open',
+      relatedIds: ['B-CONTRA-1', 'WE-WAREHOUSE', 'WE-PIER'],
+      lastResult: null,
+    });
+
+    const result = investigateAnomaly(state, 'AN-B-CONTRA-1', '2026-02-02T00:00:00.000Z');
+
+    expect(
+      result.state.worldEdges.find((edge) => edge.id === 'WE-WAREHOUSE')?.confidence,
+    ).toBe(0.7);
+    expect(result.state.worldEdges.find((edge) => edge.id === 'WE-PIER')?.confidence).toBe(
+      0.7,
+    );
+    expect(result.state.anomalies[0]?.lastResult?.toLowerCase()).toContain('nothing');
+  });
+
+  it('raises a single-source relationship when another artifact corroborates it', () => {
+    const state = baseCase();
+    state.entities.push(
+      {
+        id: 'E-DANA',
+        caseId: 'case-gen',
+        kind: 'person',
+        label: 'Dana Reyes',
+        shortLabel: 'Dana',
+        description: '',
+        aliases: [],
+        properties: {},
+        confidence: 0.8,
+        sourceEvidenceIds: ['EV-1'],
+        interval: null,
+      },
+      {
+        id: 'E-PIER',
+        caseId: 'case-gen',
+        kind: 'location',
+        label: 'Pier 48',
+        shortLabel: 'Pier 48',
+        description: '',
+        aliases: [],
+        properties: {},
+        confidence: 0.8,
+        sourceEvidenceIds: ['EV-1'],
+        interval: null,
+      },
+    );
+    state.observations.push(
+      observationFrom('O-1', 'EV-1', 'Dana Reyes at Pier 48.'),
+      observationFrom('O-2', 'EV-2', 'Dana Reyes was later seen at Pier 48 again.'),
+    );
+    state.worldEdges.push(
+      placementEdge({
+        id: 'WE-PIER',
+        object: 'E-PIER',
+        observationIds: ['O-1'],
+        confidence: 0.4,
+      }),
+    );
+    state.anomalies.push({
+      id: 'AN-CORROB-WE-PIER',
+      caseId: 'case-gen',
+      question: 'Can Dana Reyes → Pier 48 be corroborated independently?',
+      category: 'what',
+      detail: 'This relationship rests on one artifact.',
+      expectedInformationGain: 0.9,
+      status: 'open',
+      relatedIds: ['WE-PIER', 'EV-1'],
+      lastResult: null,
+    });
+
+    const result = investigateAnomaly(
+      state,
+      'AN-CORROB-WE-PIER',
+      '2026-02-02T00:00:00.000Z',
+    );
+    const edge = result.state.worldEdges.find((item) => item.id === 'WE-PIER');
+
+    expect(edge?.confidence).toBeGreaterThan(0.4);
+    expect(edge?.sourceObservationIds).toContain('O-2');
+    expect(edge?.contributions.some((item) => item.polarity === 'support')).toBe(true);
+  });
+
+  it('names the silence when nothing corroborates a lone relationship', () => {
+    const state = baseCase();
+    state.entities.push(
+      {
+        id: 'E-DANA',
+        caseId: 'case-gen',
+        kind: 'person',
+        label: 'Dana Reyes',
+        shortLabel: 'Dana',
+        description: '',
+        aliases: [],
+        properties: {},
+        confidence: 0.8,
+        sourceEvidenceIds: ['EV-1'],
+        interval: null,
+      },
+      {
+        id: 'E-PIER',
+        caseId: 'case-gen',
+        kind: 'location',
+        label: 'Pier 48',
+        shortLabel: 'Pier 48',
+        description: '',
+        aliases: [],
+        properties: {},
+        confidence: 0.8,
+        sourceEvidenceIds: ['EV-1'],
+        interval: null,
+      },
+    );
+    state.observations.push(observationFrom('O-1', 'EV-1', 'Dana Reyes at Pier 48.'));
+    state.worldEdges.push(
+      placementEdge({
+        id: 'WE-PIER',
+        object: 'E-PIER',
+        observationIds: ['O-1'],
+        confidence: 0.4,
+      }),
+    );
+    state.anomalies.push({
+      id: 'AN-CORROB-WE-PIER',
+      caseId: 'case-gen',
+      question: 'Can Dana Reyes → Pier 48 be corroborated independently?',
+      category: 'what',
+      detail: 'This relationship rests on one artifact.',
+      expectedInformationGain: 0.9,
+      status: 'open',
+      relatedIds: ['WE-PIER', 'EV-1'],
+      lastResult: null,
+    });
+
+    const result = investigateAnomaly(
+      state,
+      'AN-CORROB-WE-PIER',
+      '2026-02-02T00:00:00.000Z',
+    );
+
+    expect(result.state.worldEdges[0]?.confidence).toBe(0.4);
+    expect(result.state.anomalies[0]?.lastResult?.toLowerCase()).toContain(
+      'no independent',
+    );
+  });
+
+  it('stays idempotent once a question has been investigated', () => {
+    const state = baseCase();
+    state.anomalies.push({
+      id: 'AN-X',
+      caseId: 'case-gen',
+      question: 'What happened?',
+      category: 'what',
+      detail: 'x',
+      expectedInformationGain: 0.5,
+      status: 'open',
+      relatedIds: [],
+      lastResult: null,
+    });
+
+    const first = investigateAnomaly(state, 'AN-X', '2026-02-02T00:00:00.000Z');
+    const second = investigateAnomaly(first.state, 'AN-X', '2026-03-03T00:00:00.000Z');
+    expect(second.revision).toBeNull();
   });
 });

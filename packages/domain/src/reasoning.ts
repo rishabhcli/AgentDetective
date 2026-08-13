@@ -94,6 +94,258 @@ export function propagateNogood(
   });
 }
 
+interface GeneralInvestigation {
+  result: string;
+  usefulEvidenceIds: string[];
+  auditSteps: string[];
+  changes: Array<Omit<CaseRevision['changes'][number], 'id'>>;
+}
+
+function entityLabel(state: CaseState, entityId: string): string {
+  return state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+}
+
+function artifactsBehindEdge(state: CaseState, edgeId: string): Set<string> {
+  const edge = state.worldEdges.find((item) => item.id === edgeId);
+  if (!edge) return new Set();
+  return new Set(
+    [
+      ...edge.sourceObservationIds.map(
+        (id) => state.observations.find((item) => item.id === id)?.sourceEvidenceId,
+      ),
+      ...edge.sourceClaimIds.map(
+        (id) => state.claims.find((item) => item.id === id)?.sourceEvidenceId,
+      ),
+    ].filter((id): id is string => Boolean(id)),
+  );
+}
+
+/**
+ * Investigation of a question the engine derived rather than one the fixture
+ * authored.
+ *
+ * Each branch does the one thing that would actually move the question, and
+ * each refuses to move it when the case gives no grounds. Declining to choose
+ * is a result, and it is recorded as one.
+ */
+function investigateGeneralQuestion(
+  state: CaseState,
+  anomaly: CaseState['anomalies'][number],
+  createdAt: string,
+  attemptId: string,
+): GeneralInvestigation {
+  const related = new Set(anomaly.relatedIds);
+
+  // An open identity: rescore the bindings from the signals already collected.
+  const reference = state.unresolvedReferences.find(
+    (item) => related.has(item.id) && item.candidateBindings.length >= 2,
+  );
+  if (reference) {
+    const previous = reference.candidateBindings[0];
+    reference.candidateBindings = scoreCandidateBindings(reference);
+    const lead = reference.candidateBindings[0];
+    if (lead) {
+      reference.status = 'candidate';
+      reference.resolvedBy = attemptId;
+      const supporting = reference.resolutionSignals.filter(
+        (signal) => signal.candidateEntityId === lead.entityId,
+      );
+      for (const belief of state.beliefs) {
+        if (!belief.sourceIds.includes(reference.id)) continue;
+        belief.confidence = round(lead.probability);
+        belief.status = 'contested';
+      }
+      const retained = reference.candidateBindings.length - 1;
+      return {
+        result: `${lead.label} is the leading binding at ${Math.round(lead.probability * 100)}%; ${retained} alternative${retained === 1 ? '' : 's'} ${retained === 1 ? 'is' : 'are'} retained and the original reference is unchanged.`,
+        usefulEvidenceIds: [...new Set(supporting.map((signal) => signal.evidenceId))],
+        auditSteps: [
+          `RESOLVER rescored ${reference.candidateBindings.length} candidate bindings against ${reference.resolutionSignals.length} collected signal${reference.resolutionSignals.length === 1 ? '' : 's'}.`,
+          `LINKER applied ${supporting.length} signal${supporting.length === 1 ? '' : 's'} favouring the leading binding.`,
+          `FALSIFIER retained ${retained} alternative${retained === 1 ? '' : 's'} rather than hard-merging the identity.`,
+        ],
+        changes: [
+          {
+            kind: 'reference',
+            subjectId: reference.id,
+            label: `Leading candidate for “${reference.surfaceForm}”`,
+            before: `${previous?.label ?? 'Unknown'} ${Math.round((previous?.probability ?? 0) * 100)}%`,
+            after: `${lead.label} ${Math.round(lead.probability * 100)}%`,
+            direction: 'raised',
+          },
+        ],
+      };
+    }
+  }
+
+  // A contradiction: weigh the two sides by independent corroboration.
+  const contradiction = state.beliefs.find(
+    (belief) => related.has(belief.id) && belief.kind === 'contradiction',
+  );
+  if (contradiction) {
+    const sides = contradiction.sourceIds
+      .map((id) => state.worldEdges.find((edge) => edge.id === id))
+      .filter((edge): edge is CaseState['worldEdges'][number] => edge !== undefined)
+      .slice(0, 2);
+    const [first, second] = sides;
+    if (first && second) {
+      const firstArtifacts = artifactsBehindEdge(state, first.id);
+      const secondArtifacts = artifactsBehindEdge(state, second.id);
+      const evidenceIds = [...new Set([...firstArtifacts, ...secondArtifacts])];
+      if (firstArtifacts.size === secondArtifacts.size) {
+        return {
+          result: `Nothing in the case separates the two accounts: each rests on ${firstArtifacts.size} artifact${firstArtifacts.size === 1 ? '' : 's'}. Both remain open.`,
+          usefulEvidenceIds: evidenceIds,
+          auditSteps: [
+            `FALSIFIER compared ${firstArtifacts.size} against ${secondArtifacts.size} independent artifact${secondArtifacts.size === 1 ? '' : 's'}.`,
+            'INVESTIGATOR declined to weaken either side without grounds.',
+          ],
+          changes: [
+            {
+              kind: 'belief',
+              subjectId: contradiction.id,
+              label: 'Contradiction',
+              before: 'Open',
+              after: 'Still open; corroboration is equal on both sides',
+              direction: 'resolved',
+            },
+          ],
+        };
+      }
+      const [stronger, weaker] =
+        firstArtifacts.size > secondArtifacts.size ? [first, second] : [second, first];
+      const strongerCount = Math.max(firstArtifacts.size, secondArtifacts.size);
+      const weakerCount = Math.min(firstArtifacts.size, secondArtifacts.size);
+      const before = weaker.confidence;
+      weaker.confidence = round(weaker.confidence * 0.6);
+      weaker.disputed = true;
+      weaker.transactionTime = createdAt;
+      weaker.contributions.push({
+        sourceId: stronger.id,
+        label: `${entityLabel(state, stronger.objectId)} is corroborated by ${strongerCount} independent artifact${strongerCount === 1 ? '' : 's'}`,
+        weight: round(Math.min(0.9, strongerCount / (strongerCount + weakerCount))),
+        polarity: 'oppose',
+      });
+      return {
+        // The better-supported side is still not promoted to a fact.
+        result: `${entityLabel(state, stronger.objectId)} rests on ${strongerCount} artifact${strongerCount === 1 ? '' : 's'} and ${entityLabel(state, weaker.objectId)} on ${weakerCount} artifact${weakerCount === 1 ? '' : 's'}; the weaker placement was reduced, not removed, and the stronger one was not promoted.`,
+        usefulEvidenceIds: evidenceIds,
+        auditSteps: [
+          `FALSIFIER weighed ${strongerCount} independent artifact${strongerCount === 1 ? '' : 's'} against ${weakerCount}.`,
+          `LINKER reduced ${weaker.id} and recorded an opposing contribution.`,
+          'INVESTIGATOR left both accounts on the board.',
+        ],
+        changes: [
+          {
+            kind: 'edge',
+            subjectId: weaker.id,
+            label: `${entityLabel(state, weaker.subjectId)} → ${entityLabel(state, weaker.objectId)}`,
+            before: `${Math.round(before * 100)}%`,
+            after: `${Math.round(weaker.confidence * 100)}%`,
+            direction: 'lowered',
+          },
+        ],
+      };
+    }
+  }
+
+  // A lone relationship: look for an independent artifact that says the same.
+  const edge = state.worldEdges.find((item) => related.has(item.id));
+  if (edge) {
+    const known = artifactsBehindEdge(state, edge.id);
+    const subject = entityLabel(state, edge.subjectId).toLocaleLowerCase();
+    const object = entityLabel(state, edge.objectId).toLocaleLowerCase();
+    const corroborating = state.observations.filter((observation) => {
+      if (known.has(observation.sourceEvidenceId)) return false;
+      const text = observation.text.toLocaleLowerCase();
+      return text.includes(subject) && text.includes(object);
+    });
+
+    if (corroborating.length === 0) {
+      return {
+        result: `No independent artifact in the case mentions both ${entityLabel(state, edge.subjectId)} and ${entityLabel(state, edge.objectId)}. The relationship still rests on ${known.size} artifact${known.size === 1 ? '' : 's'} and its confidence is unchanged.`,
+        usefulEvidenceIds: [...known],
+        auditSteps: [
+          `EVIDENCE MEMORY searched ${state.observations.length} observation${state.observations.length === 1 ? '' : 's'} outside the ${known.size} artifact${known.size === 1 ? '' : 's'} already behind the relationship.`,
+          'INVESTIGATOR recorded the silence rather than inflating the relationship.',
+        ],
+        changes: [
+          {
+            kind: 'edge',
+            subjectId: edge.id,
+            label: `${entityLabel(state, edge.subjectId)} → ${entityLabel(state, edge.objectId)}`,
+            before: `${Math.round(edge.confidence * 100)}%`,
+            after: `${Math.round(edge.confidence * 100)}%; no independent corroboration found`,
+            direction: 'resolved',
+          },
+        ],
+      };
+    }
+
+    const before = edge.confidence;
+    let survivingDoubt = 1 - edge.confidence;
+    for (const observation of corroborating) {
+      const support = round(observation.extractionConfidence * 0.85, 4);
+      survivingDoubt *= 1 - support;
+      if (!edge.sourceObservationIds.includes(observation.id)) {
+        edge.sourceObservationIds.push(observation.id);
+      }
+      edge.contributions.push({
+        sourceId: observation.id,
+        label: `${observation.sourceEvidenceId} independently mentions both participants`,
+        weight: support,
+        polarity: 'support',
+      });
+    }
+    edge.confidence = round(Math.min(0.95, 1 - survivingDoubt));
+    edge.transactionTime = createdAt;
+    return {
+      result: `${corroborating.length} independent artifact${corroborating.length === 1 ? '' : 's'} corroborate${corroborating.length === 1 ? 's' : ''} the relationship; confidence rose from ${Math.round(before * 100)}% to ${Math.round(edge.confidence * 100)}%.`,
+      usefulEvidenceIds: [
+        ...new Set([...known, ...corroborating.map((item) => item.sourceEvidenceId)]),
+      ],
+      auditSteps: [
+        `EVIDENCE MEMORY found ${corroborating.length} corroborating observation${corroborating.length === 1 ? '' : 's'} in artifacts not already behind the relationship.`,
+        'LINKER attached each one as a separate supporting contribution.',
+      ],
+      changes: [
+        {
+          kind: 'edge',
+          subjectId: edge.id,
+          label: `${entityLabel(state, edge.subjectId)} → ${entityLabel(state, edge.objectId)}`,
+          before: `${Math.round(before * 100)}%`,
+          after: `${Math.round(edge.confidence * 100)}%`,
+          direction: 'raised',
+        },
+      ],
+    };
+  }
+
+  const returnedEvidenceIds = new Set<string>();
+  for (const relatedId of anomaly.relatedIds) {
+    const evidenceItem = state.evidence.find((item) => item.id === relatedId);
+    if (evidenceItem) returnedEvidenceIds.add(evidenceItem.id);
+    const assumption = state.assumptions.find((item) => item.id === relatedId);
+    assumption?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
+    const openReference = state.unresolvedReferences.find((item) => item.id === relatedId);
+    openReference?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
+    const entity = state.entities.find((item) => item.id === relatedId);
+    entity?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
+  }
+  const usefulEvidenceIds = [...returnedEvidenceIds];
+  return {
+    result: `Recovered ${usefulEvidenceIds.length} directly linked source${usefulEvidenceIds.length === 1 ? '' : 's'}, but no new evidence establishes a safe resolution.`,
+    usefulEvidenceIds,
+    auditSteps: [
+      `CASE PACKET expanded ${anomaly.relatedIds.length} linked case objects.`,
+      `EVIDENCE MEMORY returned ${usefulEvidenceIds.length} source artifacts.`,
+      'FALSIFIER found no basis for collapsing the remaining alternatives.',
+      'INVESTIGATOR left the question unresolved pending new evidence.',
+    ],
+    changes: [],
+  };
+}
+
 export function investigateAnomaly(
   input: CaseState,
   anomalyId: string,
@@ -174,25 +426,16 @@ export function investigateAnomaly(
       direction: 'raised',
     });
   } else {
-    const returnedEvidenceIds = new Set<string>();
-    for (const relatedId of anomaly.relatedIds) {
-      const evidenceItem = state.evidence.find((item) => item.id === relatedId);
-      if (evidenceItem) returnedEvidenceIds.add(evidenceItem.id);
-      const assumption = state.assumptions.find((item) => item.id === relatedId);
-      assumption?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
-      const reference = state.unresolvedReferences.find((item) => item.id === relatedId);
-      reference?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
-      const entity = state.entities.find((item) => item.id === relatedId);
-      entity?.sourceEvidenceIds.forEach((id) => returnedEvidenceIds.add(id));
-    }
-    usefulEvidenceIds = [...returnedEvidenceIds];
-    result = `Recovered ${usefulEvidenceIds.length} directly linked source${usefulEvidenceIds.length === 1 ? '' : 's'}, but no new evidence establishes a safe resolution.`;
-    auditSteps = [
-      `CASE PACKET expanded ${anomaly.relatedIds.length} linked case objects.`,
-      `EVIDENCE MEMORY returned ${usefulEvidenceIds.length} source artifacts.`,
-      'FALSIFIER found no basis for collapsing the remaining alternatives.',
-      'INVESTIGATOR left the question unresolved pending new evidence.',
-    ];
+    const general = investigateGeneralQuestion(state, anomaly, createdAt, attemptId);
+    result = general.result;
+    usefulEvidenceIds = general.usefulEvidenceIds;
+    auditSteps = general.auditSteps;
+    changes.push(
+      ...general.changes.map((change, index) => ({
+        ...change,
+        id: `${revisionId}-C${index + 1}`,
+      })),
+    );
   }
 
   anomaly.status = 'investigated';
