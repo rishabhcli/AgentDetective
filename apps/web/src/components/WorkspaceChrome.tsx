@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   ArrowLeft,
   Check,
@@ -118,122 +118,120 @@ export function WorkspaceChrome({
           >
             <MoreHorizontal size={18} aria-hidden="true" />
           </button>
-          <AnimatePresence>
-            {menuOpen ? (
-              <motion.div
-                className="workspace-action-menu"
-                // Opacity only. A menu that slides or scales while it opens
-                // moves its own targets out from under the pointer, which costs
-                // a real click as readily as an automated one.
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-              >
-                <button onClick={() => choose(onChanges)} aria-label="What changed?">
-                  <FileClock size={15} />
-                  <span>
-                    <strong>What changed?</strong>
-                    <small>Trace the current revision</small>
-                  </span>
-                </button>
-                <button onClick={() => choose(onDeductions)} aria-label="Deduction">
-                  <SearchCode size={15} />
-                  <span>
-                    <strong>Deduction chains</strong>
-                    <small>Inspect every leap</small>
-                  </span>
-                </button>
-                {state.metadata.synthetic ? (
-                  <>
-                    <button onClick={() => choose(onScenarios)} aria-label="Demo scenarios">
-                      <Route size={15} />
-                      <span>
-                        <strong>Guided scenarios</strong>
-                        <small>Exercise real flows</small>
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => choose(onCounterEvidence)}
-                      disabled={counterEvidencePresent || busyAction !== null}
-                      aria-label={
-                        counterEvidencePresent
-                          ? 'Evidence 143 already recorded'
-                          : 'Introduce Evidence 143'
-                      }
-                    >
-                      {counterEvidencePresent ? <Check size={15} /> : <Scale size={15} />}
-                      <span>
-                        <strong>
-                          {counterEvidencePresent
-                            ? 'Evidence 143 recorded'
-                            : 'Test cascade'}
-                        </strong>
-                        <small>Introduce counter-evidence</small>
-                      </span>
-                    </button>
-                  </>
-                ) : null}
-                <button onClick={() => choose(onStatus)} aria-label="Open engine status">
-                  <ShieldCheck size={15} />
-                  <span>
-                    <strong>Engine status</strong>
-                    <small>{health?.engineLabel ?? 'Checking runtime'}</small>
-                  </span>
-                </button>
-                <button onClick={() => choose(onNewCase)} aria-label="Open a new case">
-                  <FolderPlus size={15} />
-                  <span>
-                    <strong>Open a new case</strong>
-                    <small>Start from nothing but evidence</small>
-                  </span>
-                </button>
-                <button
-                  onClick={() => choose(onRederive)}
-                  disabled={busyAction !== null}
-                  aria-label="Re-derive the case"
-                >
-                  <Repeat size={15} />
-                  <span>
-                    <strong>Re-derive the case</strong>
-                    <small>Rebuild what the record supports</small>
-                  </span>
-                </button>
-                {bundled ? (
+          {/* Deliberately outside AnimatePresence. An exit animation leaves the
+              menu mounted and hit-testable while it is closing, so "present"
+              stops meaning "open" — a pointer or a test can resolve a target
+              that is on its way out and then lose it mid-click. Closing is
+              instant; only opening is animated, and only in opacity so the
+              targets never move under the cursor. */}
+          {menuOpen ? (
+            <motion.div
+              className="workspace-action-menu"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.12 }}
+            >
+              <button onClick={() => choose(onChanges)} aria-label="What changed?">
+                <FileClock size={15} />
+                <span>
+                  <strong>What changed?</strong>
+                  <small>Trace the current revision</small>
+                </span>
+              </button>
+              <button onClick={() => choose(onDeductions)} aria-label="Deduction">
+                <SearchCode size={15} />
+                <span>
+                  <strong>Deduction chains</strong>
+                  <small>Inspect every leap</small>
+                </span>
+              </button>
+              {state.metadata.synthetic ? (
+                <>
+                  <button onClick={() => choose(onScenarios)} aria-label="Demo scenarios">
+                    <Route size={15} />
+                    <span>
+                      <strong>Guided scenarios</strong>
+                      <small>Exercise real flows</small>
+                    </span>
+                  </button>
                   <button
-                    className="workspace-reset"
-                    onClick={() => choose(onReset)}
-                    disabled={busyAction === 'reset'}
+                    onClick={() => choose(onCounterEvidence)}
+                    disabled={counterEvidencePresent || busyAction !== null}
+                    aria-label={
+                      counterEvidencePresent
+                        ? 'Evidence 143 already recorded'
+                        : 'Introduce Evidence 143'
+                    }
                   >
-                    <RotateCcw size={15} />
+                    {counterEvidencePresent ? <Check size={15} /> : <Scale size={15} />}
                     <span>
                       <strong>
-                        {state.metadata.synthetic ? 'Reset sample' : 'Reset case'}
+                        {counterEvidencePresent ? 'Evidence 143 recorded' : 'Test cascade'}
                       </strong>
-                      <small>
-                        {state.metadata.synthetic
-                          ? 'Restore controlled fixture'
-                          : 'Restore the redacted Aside handoff'}
-                      </small>
+                      <small>Introduce counter-evidence</small>
                     </span>
                   </button>
-                ) : (
-                  <button
-                    className="workspace-reset"
-                    onClick={() => choose(onDeleteCase)}
-                    disabled={busyAction !== null}
-                    aria-label="Delete this case"
-                  >
-                    <Trash2 size={15} />
-                    <span>
-                      <strong>Delete this case</strong>
-                      <small>Removes it and everything derived from it</small>
-                    </span>
-                  </button>
-                )}
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
+                </>
+              ) : null}
+              <button onClick={() => choose(onStatus)} aria-label="Open engine status">
+                <ShieldCheck size={15} />
+                <span>
+                  <strong>Engine status</strong>
+                  <small>{health?.engineLabel ?? 'Checking runtime'}</small>
+                </span>
+              </button>
+              <button onClick={() => choose(onNewCase)} aria-label="Open a new case">
+                <FolderPlus size={15} />
+                <span>
+                  <strong>Open a new case</strong>
+                  <small>Start from nothing but evidence</small>
+                </span>
+              </button>
+              <button
+                onClick={() => choose(onRederive)}
+                disabled={busyAction !== null}
+                aria-label="Re-derive the case"
+              >
+                <Repeat size={15} />
+                <span>
+                  <strong>Re-derive the case</strong>
+                  <small>Rebuild what the record supports</small>
+                </span>
+              </button>
+              {bundled ? (
+                <button
+                  className="workspace-reset"
+                  onClick={() => choose(onReset)}
+                  disabled={busyAction === 'reset'}
+                >
+                  <RotateCcw size={15} />
+                  <span>
+                    <strong>
+                      {state.metadata.synthetic ? 'Reset sample' : 'Reset case'}
+                    </strong>
+                    <small>
+                      {state.metadata.synthetic
+                        ? 'Restore controlled fixture'
+                        : 'Restore the redacted Aside handoff'}
+                    </small>
+                  </span>
+                </button>
+              ) : (
+                <button
+                  className="workspace-reset"
+                  onClick={() => choose(onDeleteCase)}
+                  disabled={busyAction !== null}
+                  aria-label="Delete this case"
+                >
+                  <Trash2 size={15} />
+                  <span>
+                    <strong>Delete this case</strong>
+                    <small>Removes it and everything derived from it</small>
+                  </span>
+                </button>
+              )}
+            </motion.div>
+          ) : null}
         </div>
       </nav>
       {busyAction ? (
