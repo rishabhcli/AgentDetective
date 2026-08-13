@@ -433,6 +433,157 @@ describe('THREAD API', () => {
     );
   });
 
+  describe('an investigation with no fixture behind it', () => {
+    async function newCase(app: ReturnType<typeof createApp>, title: string) {
+      const created = await request(app).post('/api/cases').send({ title }).expect(201);
+      return created.body.state.metadata.id as string;
+    }
+
+    async function upload(
+      app: ReturnType<typeof createApp>,
+      caseId: string,
+      filename: string,
+      content: string,
+    ) {
+      return request(app)
+        .post(`/api/cases/${caseId}/evidence`)
+        .field('title', filename)
+        .field('sourceLabel', 'Uploaded by investigator')
+        .field('kind', 'access-log')
+        .field('sourceReliability', 'B')
+        .field('informationCredibility', '2')
+        .attach('file', Buffer.from(content), { filename, contentType: 'text/plain' })
+        .expect(201);
+    }
+
+    it('starts a new case genuinely empty', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Warehouse shortfall');
+      const response = await request(app).get(`/api/cases/${caseId}`).expect(200);
+
+      expect(response.body.state.metadata.synthetic).toBe(false);
+      expect(response.body.state.evidence).toEqual([]);
+      expect(response.body.state.entities).toEqual([]);
+      expect(response.body.state.worldEdges).toEqual([]);
+      expect(response.body.state.reconstructions).toEqual([]);
+    });
+
+    it('refuses to delete a bundled demonstration case', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      await request(app).delete('/api/cases/case-badge-17').expect(409);
+      await request(app).get('/api/cases/case-badge-17').expect(200);
+    });
+
+    it('deletes a case the investigator created', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Disposable');
+      await request(app).delete(`/api/cases/${caseId}`).expect(200);
+      await request(app).get(`/api/cases/${caseId}`).expect(404);
+    });
+
+    it('builds entities, relationships and questions from uploaded text alone', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Warehouse shortfall');
+      const response = await upload(
+        app,
+        caseId,
+        'gate-log.txt',
+        [
+          'Camera 4: Dana Reyes entered Warehouse A on 2026-08-04T21:06:00Z.',
+          'Camera 4: Vehicle 7VXK220 was parked at Warehouse A on 2026-08-04T21:04:00Z.',
+        ].join('\n'),
+      );
+
+      const state = response.body.state;
+      expect(state.entities.map((item: { label: string }) => item.label)).toEqual(
+        expect.arrayContaining(['Dana Reyes', 'Warehouse A']),
+      );
+      expect(state.worldEdges.length).toBeGreaterThan(0);
+      expect(state.anomalies.length).toBeGreaterThan(0);
+      // Every derived relationship names its sources and the leap it required.
+      for (const edge of state.worldEdges) {
+        expect(edge.assumptionIds.length).toBeGreaterThan(0);
+        expect(
+          edge.sourceObservationIds.length + edge.sourceClaimIds.length,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('finds the contradiction between two artifacts that disagree', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Two cameras');
+      await upload(
+        app,
+        caseId,
+        'gate-log.txt',
+        'Camera 4: Dana Reyes entered Warehouse A on 2026-08-04T21:06:00Z.',
+      );
+      const second = await upload(
+        app,
+        caseId,
+        'pier-log.txt',
+        'Camera 9: Dana Reyes was seen at Pier 48 on 2026-08-04T21:06:30Z.',
+      );
+
+      const state = second.body.state;
+      const contradictions = state.beliefs.filter(
+        (belief: { kind: string }) => belief.kind === 'contradiction',
+      );
+      expect(contradictions.length).toBeGreaterThan(0);
+      // Competing explanations are offered; none is selected as the answer.
+      const hypotheses = state.beliefs.filter(
+        (belief: { kind: string }) => belief.kind === 'hypothesis',
+      );
+      expect(hypotheses.length).toBeGreaterThanOrEqual(3);
+      expect(
+        hypotheses.every((belief: { status: string }) => belief.status === 'open'),
+      ).toBe(true);
+      expect(state.reconstructions.length).toBeGreaterThanOrEqual(2);
+      expect(
+        state.reconstructions.filter((item: { isLeading: boolean }) => item.isLeading),
+      ).toHaveLength(1);
+    });
+
+    it('re-derives without changing anything the second time', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Stable');
+      await upload(
+        app,
+        caseId,
+        'log.txt',
+        'Camera 4: Dana Reyes entered Warehouse A on 2026-08-04T21:06:00Z.',
+      );
+
+      await request(app).post(`/api/cases/${caseId}/infer`).expect(200);
+      const again = await request(app).post(`/api/cases/${caseId}/infer`).expect(200);
+      expect(again.body.revision).toBeNull();
+    });
+  });
+
   it('preserves opaque evidence without inventing an interpretation', async () => {
     const app = createApp({
       store,

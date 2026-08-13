@@ -1617,6 +1617,19 @@ describe('runInferencePass temporal enrichment', () => {
     expect(result.state.reconstructions.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('leaves an unchanged account alone instead of restamping it', () => {
+    // updatedAt records when an account last changed, not when it was checked.
+    const first = runInferencePass(timedCase(), { timestamp: '2026-01-01T00:00:00.000Z' });
+    const second = runInferencePass(first.state, {
+      timestamp: '2026-02-02T00:00:00.000Z',
+    });
+
+    expect(second.revision).toBeNull();
+    expect(second.state.reconstructions[0]?.updatedAt).toBe(
+      first.state.reconstructions[0]?.updatedAt,
+    );
+  });
+
   it('stays idempotent once the intervals are filled', () => {
     const first = runInferencePass(timedCase(), { timestamp: '2026-01-01T00:00:00.000Z' });
     const second = runInferencePass(first.state, {

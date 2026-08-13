@@ -2244,7 +2244,15 @@ export function runInferencePass(
       // structure; it does not quietly replace curated work.
       return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and left ${authored.length} authored account${authored.length === 1 ? '' : 's'} untouched.`;
     }
-    state.reconstructions = buildReconstructions(state, { timestamp });
+    const rebuilt = buildReconstructions(state, { timestamp });
+    // `updatedAt` means "when this account last changed", so an account whose
+    // content is identical keeps its original stamp. Restamping on every look
+    // would make re-derivation read as a case change forever.
+    const withoutStamps = (items: Reconstruction[]): string =>
+      JSON.stringify(items.map(({ updatedAt: _ignored, ...rest }) => rest));
+    if (withoutStamps(rebuilt) !== withoutStamps(state.reconstructions)) {
+      state.reconstructions = rebuilt;
+    }
     return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and rebuilt ${state.reconstructions.length} account${state.reconstructions.length === 1 ? '' : 's'} without selecting one.`;
   });
 
