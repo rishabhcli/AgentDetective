@@ -7,6 +7,7 @@ import {
   deriveWorldEdges,
   detectContradictions,
   extractEntityMentions,
+  extractTemporalInterval,
   rankOpenQuestions,
   resolveEntities,
   runInferencePass,
@@ -181,6 +182,25 @@ describe('extractEntityMentions', () => {
     const place = mentions.find((mention) => mention.surfaceForm === 'Pier 48');
     expect(place?.kindProbabilities.location).toBeGreaterThan(
       place?.kindProbabilities.person ?? 1,
+    );
+  });
+
+  it('keeps a name opening a statement even when the record also has a speaker', () => {
+    // The speaker is metadata about the record, not a span inside it, so it must
+    // not win an overlap contest against the first words of the quotation.
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          speaker: 'Camera 4',
+          verbatim: 'Dana Reyes at Warehouse A.',
+        }),
+      ],
+    );
+
+    expect(mentions.map((mention) => mention.surfaceForm)).toEqual(
+      expect.arrayContaining(['Camera 4', 'Dana Reyes', 'Warehouse A']),
     );
   });
 
@@ -1482,5 +1502,126 @@ describe('runInferencePass', () => {
     expect(
       claimEdges.every((edge) => edge.assumptionIds.includes('A-LEAP-TESTIMONY')),
     ).toBe(true);
+  });
+});
+
+describe('extractTemporalInterval', () => {
+  it('reads a full ISO timestamp as an exact instant', () => {
+    const interval = extractTemporalInterval('Gate opened at 2026-08-04T21:06:14Z.', null);
+    expect(interval?.precision).toBe('exact');
+    expect(interval?.earliest).toBe(interval?.latest);
+    expect(Date.parse(interval?.earliest ?? '')).not.toBeNaN();
+  });
+
+  it('reads a date and clock time together', () => {
+    const interval = extractTemporalInterval('On 2026-08-04 at 21:06 the van left.', null);
+    expect(interval?.precision).toBe('minute');
+    expect(interval?.earliest.startsWith('2026-08-04')).toBe(true);
+  });
+
+  it('refuses a bare clock time when no date anchors it', () => {
+    // Choosing a day for "21:06" would be inventing precision the source lacks.
+    expect(extractTemporalInterval('He left at 21:06.', null)).toBeNull();
+  });
+
+  it('anchors a bare clock time to the artifact capture date when one exists', () => {
+    const interval = extractTemporalInterval('He left at 21:06.', {
+      earliest: '2026-08-04T00:00:00.000Z',
+      latest: '2026-08-04T23:59:59.000Z',
+      precision: 'day',
+      confidence: 1,
+    });
+    expect(interval?.earliest.startsWith('2026-08-04')).toBe(true);
+    expect(interval?.precision).toBe('minute');
+  });
+
+  it('reads a date with no time as a whole-day range', () => {
+    const interval = extractTemporalInterval('Filed on 2026-08-04.', null);
+    expect(interval?.precision).toBe('day');
+    expect(interval?.earliest).not.toBe(interval?.latest);
+  });
+
+  it('finds no time in text that has none', () => {
+    expect(extractTemporalInterval('The pallet was heavy.', null)).toBeNull();
+  });
+});
+
+describe('runInferencePass temporal enrichment', () => {
+  function timedCase() {
+    const state = createEmptyCase({ id: 'case-timed', title: 'Timed' });
+    state.evidence.push({
+      id: 'EV-1',
+      caseId: 'case-timed',
+      title: 'Log',
+      kind: 'access-log',
+      fileName: 'log.txt',
+      mimeType: 'text/plain',
+      sha256: 'b'.repeat(64),
+      ingestedAt: '2026-08-05T00:00:00.000Z',
+      capturedAt: null,
+      sourceLabel: 'Gate',
+      chainOfCustody: 'test',
+      content: null,
+      rawLocator: null,
+      extractionStatus: 'bounded-local',
+      extractor: 'local-deterministic',
+      observationIds: [],
+      claimIds: ['C-1', 'C-2'],
+      synthetic: false,
+      challengedByEvidenceIds: [],
+    });
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Camera 4',
+        verbatim: 'Dana Reyes at Warehouse A on 2026-08-04T21:06:00Z.',
+        sourceEvidenceId: 'EV-1',
+      }),
+      claim({
+        id: 'C-2',
+        speaker: 'Camera 9',
+        verbatim: 'Dana Reyes at Pier 48 on 2026-08-04T21:06:30Z.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+    return state;
+  }
+
+  it('fills a claim interval from a timestamp inside its own text', () => {
+    const result = runInferencePass(timedCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const enriched = result.state.claims.find((item) => item.id === 'C-1');
+    expect(enriched?.interval).not.toBeNull();
+    expect(enriched?.interval?.earliest.startsWith('2026-08-04')).toBe(true);
+  });
+
+  it('carries the parsed time onto the relationship it supports', () => {
+    const result = runInferencePass(timedCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const placed = result.state.worldEdges.filter(
+      (edge) => edge.predicate === 'OBSERVED_AT' && edge.validTime !== null,
+    );
+    expect(placed.length).toBeGreaterThan(0);
+  });
+
+  it('finds the contradiction two timed artifacts create between them', () => {
+    const result = runInferencePass(timedCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const contradictions = result.state.beliefs.filter(
+      (belief) => belief.kind === 'contradiction',
+    );
+    expect(contradictions.length).toBeGreaterThan(0);
+    expect(result.state.reconstructions.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stays idempotent once the intervals are filled', () => {
+    const first = runInferencePass(timedCase(), { timestamp: '2026-01-01T00:00:00.000Z' });
+    const second = runInferencePass(first.state, {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    expect(second.revision).toBeNull();
   });
 });

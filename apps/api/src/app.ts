@@ -3,10 +3,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import {
   applyCounterEvidence,
+  createEmptyCase,
   inferEvidenceKind,
   ingestLocalEvidence,
   investigateAnomaly,
   isMaterialEvidenceKindConflict,
+  runInferencePass,
   sampleCaseId,
   type AgentName,
   type AgentMission,
@@ -39,7 +41,7 @@ import {
 } from './connected-research.js';
 import { AgentOrchestrator } from './orchestrator.js';
 import { ProviderHub } from './providers.js';
-import { JsonCaseStore, type CaseStore } from './store.js';
+import { isBundledCase, JsonCaseStore, type CaseStore } from './store.js';
 
 const evidenceKinds: EvidenceKind[] = [
   'message',
@@ -69,6 +71,30 @@ const reviewFields = z.object({
 const researchFields = reviewFields.extend({
   scope: z.enum(['case', 'connected']).default('case'),
 });
+
+const newCaseFields = z.object({
+  title: z.string().trim().min(3).max(120),
+  subtitle: z.string().trim().min(1).max(240).optional(),
+  classification: z.string().trim().min(1).max(80).optional(),
+  location: z.string().trim().min(1).max(120).optional(),
+});
+
+/** A readable, filesystem-safe case id derived from the title. */
+function uniqueCaseId(title: string, taken: ReadonlySet<string>): string {
+  const base =
+    title
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/gu, '-')
+      .replace(/^-+|-+$/gu, '')
+      .slice(0, 48) || 'case';
+  let candidate = `case-${base}`;
+  let suffix = 2;
+  while (taken.has(candidate)) {
+    candidate = `case-${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
 
 const missionFields = z.object({
   instruction: z.string().trim().min(8).max(1_200),
@@ -1099,10 +1125,92 @@ export function createApp({
     response.json({ cases: await store.listCases() });
   });
 
+  app.post('/api/cases', async (request, response) => {
+    const parsed = newCaseFields.safeParse(request.body);
+    if (!parsed.success) {
+      return response
+        .status(400)
+        .json({ error: 'Invalid case details.', details: parsed.error.flatten() });
+    }
+    const existing = await store.listCases();
+    const taken = new Set(existing.map((item) => item.id));
+    const state = createEmptyCase({
+      id: uniqueCaseId(parsed.data.title, taken),
+      title: parsed.data.title,
+      ...(parsed.data.subtitle === undefined ? {} : { subtitle: parsed.data.subtitle }),
+      ...(parsed.data.classification === undefined
+        ? {}
+        : { classification: parsed.data.classification }),
+      ...(parsed.data.location === undefined ? {} : { location: parsed.data.location }),
+    });
+    await store.saveCase(state);
+    return response.status(201).json({ state });
+  });
+
   app.get('/api/cases/:caseId', async (request, response) => {
     const state = await store.getCase(request.params.caseId);
     if (!state) return response.status(404).json({ error: 'Case not found.' });
     return response.json({ state });
+  });
+
+  app.delete('/api/cases/:caseId', async (request, response) => {
+    const caseId = String(request.params.caseId);
+    if (isBundledCase(caseId)) {
+      return response.status(409).json({
+        error: 'This is a bundled demonstration case and cannot be deleted.',
+      });
+    }
+    const deleted = await store.deleteCase(caseId);
+    if (!deleted) return response.status(404).json({ error: 'Case not found.' });
+    return response.status(200).json({ deleted: caseId });
+  });
+
+  /**
+   * Re-derives the whole case from its preserved records. Nothing is
+   * re-extracted and no artifact is touched; only the derived layer is rebuilt.
+   */
+  app.post('/api/cases/:caseId/infer', async (request, response) => {
+    const caseId = String(request.params.caseId);
+    const state = await store.getCase(caseId);
+    if (!state) return response.status(404).json({ error: 'Case not found.' });
+    const result = runInferencePass(state);
+    if (!result.revision) {
+      return response.json({
+        state: result.state,
+        revision: null,
+        auditSteps: result.auditSteps,
+      });
+    }
+    await store.saveCase(result.state);
+    const packet = await store.buildCasePacket(
+      result.state,
+      'What does the case record support after re-derivation?',
+    );
+    result.state.casePackets.unshift(packet);
+    const run = await attachRun({
+      state: result.state,
+      orchestrator,
+      trigger: 'Re-derived the case from its preserved records',
+      affectedIds: uniqueIds(
+        result.state.entities.map((item) => item.id),
+        result.state.worldEdges.map((item) => item.id),
+      ),
+      packetId: packet.id,
+      selectedAgents: [
+        'RESOLVER',
+        'CHRONOLOGIST',
+        'LINKER',
+        'HYPOTHESIS ENGINE',
+        'FALSIFIER',
+        'INVESTIGATOR',
+      ],
+    });
+    await store.saveCase(result.state);
+    return response.json({
+      state: result.state,
+      revision: result.revision,
+      auditSteps: [...result.auditSteps, `LangGraph run ${run.id} recorded the pass.`],
+    });
   });
 
   app.get('/api/cases/:caseId/evidence/:evidenceId/content', async (request, response) => {
@@ -1634,6 +1742,23 @@ export function createApp({
       result.auditSteps.push(
         ...extraction.warnings.map((warning) => `WARNING · ${warning}`),
       );
+      // Preserving an artifact is not the same as understanding it. The
+      // derivation pass is what turns the preserved record into entities,
+      // relationships, contradictions and ranked questions.
+      const entitiesBefore = result.state.entities.length;
+      const edgesBefore = result.state.worldEdges.length;
+      const inference = runInferencePass(result.state, {
+        ...(result.revision ? { timestamp: result.revision.createdAt } : {}),
+        // Only the newly preserved artifact is read for mentions and
+        // relationships; case-wide stages still judge it against everything.
+        ...(result.revision?.triggerEvidenceId
+          ? { evidenceScope: [result.revision.triggerEvidenceId] }
+          : {}),
+      });
+      result.state = inference.state;
+      result.auditSteps.push(...inference.auditSteps);
+      const derivedEntities = result.state.entities.length - entitiesBefore;
+      const derivedEdges = result.state.worldEdges.length - edgesBefore;
       if (result.revision) {
         await store.saveCase(result.state);
         const evidenceId = result.revision.triggerEvidenceId;
@@ -1678,7 +1803,15 @@ export function createApp({
             packet.evidenceIds,
           ),
           packetId: packet.id,
-          selectedAgents: ['INGESTOR', 'RESOLVER', 'CHRONOLOGIST', 'LINKER'],
+          selectedAgents: [
+            'INGESTOR',
+            'RESOLVER',
+            'CHRONOLOGIST',
+            'LINKER',
+            'HYPOTHESIS ENGINE',
+            'FALSIFIER',
+            'INVESTIGATOR',
+          ],
           providerDetails: {
             INGESTOR: {
               provider: ingestorProvider,
@@ -1698,7 +1831,7 @@ export function createApp({
             RESOLVER: {
               provider: 'deterministic',
               model: null,
-              detail: `Retained ${uploadedReferences.length} vague reference${uploadedReferences.length === 1 ? '' : 's'} as unresolved candidates; no entity was hard-merged.`,
+              detail: `Derived ${derivedEntities} entit${derivedEntities === 1 ? 'y' : 'ies'} and retained ${uploadedReferences.length} vague reference${uploadedReferences.length === 1 ? '' : 's'} as unresolved candidates; no entity was hard-merged.`,
               inputIds: uploadedClaims.map((item) => item.id),
               outputIds: uploadedReferences.map((item) => item.id),
             },
@@ -1714,10 +1847,34 @@ export function createApp({
             LINKER: {
               provider: 'deterministic',
               model: null,
-              detail:
-                'Checked the new observations against the world graph; no relationship was promoted without an explicit source contribution.',
+              detail: `Derived ${derivedEdges} relationship${derivedEdges === 1 ? '' : 's'}; each one carries its source records and the assumption its derivation required.`,
               inputIds: uploadedObservations.map((item) => item.id),
-              outputIds: [],
+              outputIds: result.state.worldEdges
+                .slice(0, derivedEdges)
+                .map((item) => item.id),
+            },
+            'HYPOTHESIS ENGINE': {
+              provider: 'deterministic',
+              model: null,
+              detail: `Rebuilt ${result.state.reconstructions.length} competing account${result.state.reconstructions.length === 1 ? '' : 's'} without selecting one.`,
+              inputIds: result.state.worldEdges.map((item) => item.id),
+              outputIds: result.state.reconstructions.map((item) => item.id),
+            },
+            FALSIFIER: {
+              provider: 'deterministic',
+              model: null,
+              detail: `${result.state.beliefs.filter((item) => item.kind === 'contradiction').length} contradiction${result.state.beliefs.filter((item) => item.kind === 'contradiction').length === 1 ? '' : 's'} currently stand on the record.`,
+              inputIds: result.state.worldEdges.map((item) => item.id),
+              outputIds: result.state.beliefs
+                .filter((item) => item.kind === 'contradiction')
+                .map((item) => item.id),
+            },
+            INVESTIGATOR: {
+              provider: 'deterministic',
+              model: null,
+              detail: `Ranked ${result.state.anomalies.length} open question${result.state.anomalies.length === 1 ? '' : 's'} by expected information gain.`,
+              inputIds: [],
+              outputIds: result.state.anomalies.map((item) => item.id),
             },
           },
         });

@@ -26,6 +26,7 @@ import type {
   ResolutionSignal,
   StatementStatus,
   TemporalConstraint,
+  TimeInterval,
   UnresolvedReference,
   WorldEdge,
   WorldPredicate,
@@ -467,8 +468,16 @@ function draftsToMentions(
   );
   const kept: MentionDraft[] = [];
   for (const draft of ordered) {
+    // A negative offset marks a draft that is not a span in the text at all —
+    // the speaker attribution. It neither loses an overlap contest nor blocks
+    // the words the quotation actually opens with.
+    if (draft.start < 0) {
+      kept.push(draft);
+      continue;
+    }
     const end = draft.start + draft.surfaceForm.length;
     const overlaps = kept.some((existing) => {
+      if (existing.start < 0) return false;
       const existingEnd = existing.start + existing.surfaceForm.length;
       return draft.start < existingEnd && existing.start < end;
     });
@@ -1294,7 +1303,19 @@ export interface ContradictionResult {
   beliefs: Belief[];
   /** Edges that are now in tension and should be shown as disputed. */
   disputedEdgeIds: string[];
+  /** Warrants the detection itself required, so they can be attacked. */
+  assumptions: Assumption[];
 }
+
+/**
+ * Two placements at distinct locations separated by less than this many seconds
+ * are treated as being in tension. The engine cannot measure the distance
+ * between two location records, so this is a stated warrant rather than a
+ * proof, and it is attached to every conflict it produces.
+ */
+const DEFAULT_TRANSIT_WINDOW_SECONDS = 60;
+
+const TRANSIT_ASSUMPTION_ID = 'A-LEAP-TRANSIT';
 
 /**
  * Two kinds of conflict the record can carry on its own: a participant placed
@@ -1304,9 +1325,15 @@ export interface ContradictionResult {
  * Both are read conservatively. Without a time on both sides, two placements
  * are merely two placements — saying otherwise would invent the conflict.
  */
-export function detectContradictions(state: CaseState): ContradictionResult {
+export function detectContradictions(
+  state: CaseState,
+  options: { transitWindowSeconds?: number } = {},
+): ContradictionResult {
+  const transitWindowSeconds =
+    options.transitWindowSeconds ?? DEFAULT_TRANSIT_WINDOW_SECONDS;
   const beliefs: Belief[] = [];
   const disputed = new Set<string>();
+  let usedTransitWarrant = false;
   const labelOf = (entityId: string): string =>
     state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
 
@@ -1329,7 +1356,23 @@ export function detectContradictions(state: CaseState): ContradictionResult {
         // An unparseable interval is not evidence of a conflict.
         continue;
       }
-      if (DISJOINT_RELATIONS.has(relation)) continue;
+
+      const gapSeconds = (() => {
+        const aStart = Date.parse(a.validTime.earliest);
+        const aEnd = Date.parse(a.validTime.latest);
+        const bStart = Date.parse(b.validTime.earliest);
+        const bEnd = Date.parse(b.validTime.latest);
+        if ([aStart, aEnd, bStart, bEnd].some(Number.isNaN))
+          return Number.POSITIVE_INFINITY;
+        if (aEnd < bStart) return (bStart - aEnd) / 1_000;
+        if (bEnd < aStart) return (aStart - bEnd) / 1_000;
+        return 0;
+      })();
+
+      const overlapping = !DISJOINT_RELATIONS.has(relation);
+      const tooCloseToTravel = !overlapping && gapSeconds <= transitWindowSeconds;
+      if (!overlapping && !tooCloseToTravel) continue;
+      if (tooCloseToTravel) usedTransitWarrant = true;
 
       const [first, second] = a.id <= b.id ? [a, b] : [b, a];
       disputed.add(first.id);
@@ -1338,8 +1381,12 @@ export function detectContradictions(state: CaseState): ContradictionResult {
         id: `B-CONTRA-${first.id}-${second.id}`,
         caseId: state.metadata.id,
         kind: 'contradiction',
-        label: `${labelOf(a.subjectId)} is placed at both ${labelOf(first.objectId)} and ${labelOf(second.objectId)} at the same time`,
-        detail: `${first.id} holds ${first.validTime?.earliest ?? 'unknown'}–${first.validTime?.latest ?? 'unknown'} and ${second.id} holds ${second.validTime?.earliest ?? 'unknown'}–${second.validTime?.latest ?? 'unknown'}. The intervals ${relation}, so at least one placement is wrong or one of the two locations is not what it appears to be.`,
+        label: overlapping
+          ? `${labelOf(a.subjectId)} is placed at both ${labelOf(first.objectId)} and ${labelOf(second.objectId)} at the same time`
+          : `${labelOf(a.subjectId)} is placed at ${labelOf(first.objectId)} and ${labelOf(second.objectId)} ${Math.round(gapSeconds)}s apart`,
+        detail: overlapping
+          ? `${first.id} holds ${first.validTime?.earliest ?? 'unknown'}–${first.validTime?.latest ?? 'unknown'} and ${second.id} holds ${second.validTime?.earliest ?? 'unknown'}–${second.validTime?.latest ?? 'unknown'}. The intervals ${relation}, so at least one placement is wrong or one of the two locations is not what it appears to be.`
+          : `${first.id} and ${second.id} place the same subject at two different locations ${Math.round(gapSeconds)} seconds apart. This is a conflict only while the transit warrant holds: the engine cannot measure the distance between these two location records, so a short walk between adjacent places would dissolve it.`,
         status: 'contested',
         confidence: round(Math.min(first.confidence, second.confidence), 2),
         sourceIds: [
@@ -1349,10 +1396,25 @@ export function detectContradictions(state: CaseState): ContradictionResult {
           ...second.sourceObservationIds,
         ],
         // The conflict holds exactly when both derivations hold, so its
-        // environment is the union of what each one assumed.
-        environments: [[...new Set([...first.assumptionIds, ...second.assumptionIds])]],
+        // environment is the union of what each one assumed — plus the transit
+        // warrant when the conflict rests on one.
+        environments: [
+          [
+            ...new Set([
+              ...first.assumptionIds,
+              ...second.assumptionIds,
+              ...(tooCloseToTravel ? [TRANSIT_ASSUMPTION_ID] : []),
+            ]),
+          ],
+        ],
         survivingEnvironments: [
-          [...new Set([...first.assumptionIds, ...second.assumptionIds])],
+          [
+            ...new Set([
+              ...first.assumptionIds,
+              ...second.assumptionIds,
+              ...(tooCloseToTravel ? [TRANSIT_ASSUMPTION_ID] : []),
+            ]),
+          ],
         ],
       });
     }
@@ -1403,6 +1465,20 @@ export function detectContradictions(state: CaseState): ContradictionResult {
   return {
     beliefs: beliefs.sort((first, second) => first.id.localeCompare(second.id)),
     disputedEdgeIds: [...disputed].sort((first, second) => first.localeCompare(second)),
+    assumptions: usedTransitWarrant
+      ? [
+          {
+            id: TRANSIT_ASSUMPTION_ID,
+            caseId: state.metadata.id,
+            label: `Two distinct locations cannot both be occupied within ${transitWindowSeconds}s`,
+            detail:
+              'The engine holds no map, so it cannot prove that two location records are far enough apart to make a short gap impossible. Establishing that the two places are adjacent would dissolve every conflict resting on this warrant.',
+            status: 'valid',
+            sourceEvidenceIds: [],
+            invalidatedByEvidenceId: null,
+          },
+        ]
+      : [],
   };
 }
 
@@ -1954,7 +2030,7 @@ export function buildReconstructions(
         left.branch.key.localeCompare(right.branch.key),
     )
     .map((draft, index) => ({
-      id: `R-${draft.branch.key}`,
+      id: `${DERIVED_RECONSTRUCTION_PREFIX}${draft.branch.key}`,
       caseId: state.metadata.id,
       title: draft.branch.title,
       eyebrow: index === 0 ? draft.branch.eyebrow : 'Alternative account',
@@ -1974,10 +2050,22 @@ export function buildReconstructions(
     }));
 }
 
+/**
+ * Reconstructions the engine owns. Anything without this prefix was authored
+ * and is never overwritten by a derivation pass.
+ */
+export const DERIVED_RECONSTRUCTION_PREFIX = 'R-DERIVED-';
+
 export interface InferencePassOptions {
   timestamp?: string;
   /** Upper bound on records read in one pass; a large corpus degrades to a sample. */
   maxRecords?: number;
+  /**
+   * Restricts which artifacts' records are read for mentions and relationships.
+   * Case-wide stages (contradictions, explanations, questions) still see
+   * everything, so new evidence is judged against the whole case.
+   */
+  evidenceScope?: readonly string[];
 }
 
 function mergeById<T extends { id: string }>(existing: T[], derived: readonly T[]): number {
@@ -2010,6 +2098,8 @@ export function runInferencePass(
   const auditSteps: string[] = [];
 
   const before = JSON.stringify([
+    state.observations,
+    state.claims,
     state.entities,
     state.worldEdges,
     state.unresolvedReferences,
@@ -2021,11 +2111,16 @@ export function runInferencePass(
     state.temporalConstraints,
   ]);
 
-  const totalRecords = state.observations.length + state.claims.length;
-  const observationBudget = Math.min(state.observations.length, maxRecords);
+  const scope = options.evidenceScope ? new Set(options.evidenceScope) : null;
+  const inScope = <T extends { sourceEvidenceId: string }>(record: T): boolean =>
+    scope === null || scope.has(record.sourceEvidenceId);
+  const scopedObservations = state.observations.filter(inScope);
+  const scopedClaims = state.claims.filter(inScope);
+  const totalRecords = scopedObservations.length + scopedClaims.length;
+  const observationBudget = Math.min(scopedObservations.length, maxRecords);
   const claimBudget = Math.max(0, maxRecords - observationBudget);
-  const observations = state.observations.slice(0, observationBudget);
-  const claims = state.claims.slice(0, claimBudget);
+  const observations = scopedObservations.slice(0, observationBudget);
+  const claims = scopedClaims.slice(0, claimBudget);
   if (totalRecords > maxRecords) {
     auditSteps.push(
       `INGESTOR bounded this pass to ${maxRecords} of ${totalRecords} records; the remainder is untouched, not summarized.`,
@@ -2042,6 +2137,43 @@ export function runInferencePass(
       );
     }
   };
+
+  runStage('CHRONOLOGIST', () => {
+    let filled = 0;
+    const capturedAtOf = (evidenceId: string): TimeInterval | null =>
+      state.evidence.find((item) => item.id === evidenceId)?.capturedAt ?? null;
+    for (const observation of observations) {
+      if (observation.interval) continue;
+      const interval = extractTemporalInterval(
+        observation.text,
+        capturedAtOf(observation.sourceEvidenceId),
+      );
+      if (!interval) continue;
+      const record = state.observations.find((item) => item.id === observation.id);
+      if (record) {
+        record.interval = interval;
+        observation.interval = interval;
+        filled += 1;
+      }
+    }
+    for (const claim of claims) {
+      if (claim.interval) continue;
+      const interval = extractTemporalInterval(
+        claimSourceLine(state, claim),
+        capturedAtOf(claim.sourceEvidenceId),
+      );
+      if (!interval) continue;
+      const record = state.claims.find((item) => item.id === claim.id);
+      if (record) {
+        record.interval = interval;
+        claim.interval = interval;
+        filled += 1;
+      }
+    }
+    return filled === 0
+      ? null
+      : `CHRONOLOGIST placed ${filled} record${filled === 1 ? '' : 's'} in time from timestamps the sources already carried.`;
+  });
 
   let mentions: EntityMention[] = [];
   runStage('INGESTOR', () => {
@@ -2092,6 +2224,7 @@ export function runInferencePass(
   runStage('FALSIFIER', () => {
     const contradictions = detectContradictions(state);
     const added = mergeById(state.beliefs, contradictions.beliefs);
+    mergeById(state.assumptions, contradictions.assumptions);
     for (const edgeId of contradictions.disputedEdgeIds) {
       const edge = state.worldEdges.find((item) => item.id === edgeId);
       if (edge) edge.disputed = true;
@@ -2103,25 +2236,41 @@ export function runInferencePass(
     const abduction = abduceHypotheses(state);
     const added = mergeById(state.beliefs, abduction.beliefs);
     mergeById(state.beliefEdges, abduction.beliefEdges);
+    const authored = state.reconstructions.filter(
+      (item) => !item.id.startsWith(DERIVED_RECONSTRUCTION_PREFIX),
+    );
+    if (authored.length > 0) {
+      // A case carrying authored accounts keeps them. The derivation layer adds
+      // structure; it does not quietly replace curated work.
+      return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and left ${authored.length} authored account${authored.length === 1 ? '' : 's'} untouched.`;
+    }
     state.reconstructions = buildReconstructions(state, { timestamp });
     return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and rebuilt ${state.reconstructions.length} account${state.reconstructions.length === 1 ? '' : 's'} without selecting one.`;
   });
 
   runStage('INVESTIGATOR', () => {
     const ranked = rankOpenQuestions(state);
-    // An answered question keeps its answer; ranking never resurrects it.
-    const answered = new Map(
-      state.anomalies.map((anomaly) => [anomaly.id, anomaly] as const),
-    );
-    state.anomalies = ranked.map((anomaly) => {
-      const existing = answered.get(anomaly.id);
-      if (!existing) return anomaly;
-      return { ...anomaly, status: existing.status, lastResult: existing.lastResult };
+    const rankedById = new Map(ranked.map((anomaly) => [anomaly.id, anomaly] as const));
+    // An answered question keeps its answer, and a question the engine did not
+    // derive is never dropped just because this pass did not re-derive it.
+    const merged = state.anomalies.map((existing) => {
+      const fresh = rankedById.get(existing.id);
+      if (!fresh) return existing;
+      rankedById.delete(existing.id);
+      return { ...fresh, status: existing.status, lastResult: existing.lastResult };
     });
-    return `INVESTIGATOR ranked ${state.anomalies.length} open question${state.anomalies.length === 1 ? '' : 's'} by expected information gain.`;
+    const added = [...rankedById.values()];
+    state.anomalies = [...merged, ...added].sort(
+      (first, second) =>
+        second.expectedInformationGain - first.expectedInformationGain ||
+        first.id.localeCompare(second.id),
+    );
+    return `INVESTIGATOR ranked ${state.anomalies.length} open question${state.anomalies.length === 1 ? '' : 's'} by expected information gain (${added.length} newly derived).`;
   });
 
   const after = JSON.stringify([
+    state.observations,
+    state.claims,
     state.entities,
     state.worldEdges,
     state.unresolvedReferences,
@@ -2173,4 +2322,75 @@ export function runInferencePass(
   state.metadata.updatedAt = timestamp;
 
   return { state, revision, auditSteps };
+}
+
+const ISO_INSTANT =
+  /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/u;
+const CALENDAR_DATE = /\d{4}-\d{2}-\d{2}/u;
+const CLOCK_TIME = /(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?![\d:])/u;
+
+/**
+ * A time interval read out of free text.
+ *
+ * The rule that matters is the refusal: a bare clock time with nothing to
+ * anchor it to a day yields `null`. Picking a date would manufacture the
+ * precision the source never had.
+ */
+export function extractTemporalInterval(
+  text: string,
+  anchor: TimeInterval | null,
+): TimeInterval | null {
+  const instant = ISO_INSTANT.exec(text);
+  if (instant) {
+    const parsed = Date.parse(instant[0]);
+    if (!Number.isNaN(parsed)) {
+      const iso = new Date(parsed).toISOString();
+      return { earliest: iso, latest: iso, precision: 'exact', confidence: 0.95 };
+    }
+  }
+
+  const date = CALENDAR_DATE.exec(text);
+  const clock = CLOCK_TIME.exec(text);
+  const day = date?.[0] ?? anchor?.earliest.slice(0, 10) ?? null;
+
+  if (clock && day) {
+    const hours = clock[1]?.padStart(2, '0') ?? '00';
+    const minutes = clock[2] ?? '00';
+    const seconds = clock[3];
+    if (seconds) {
+      const iso = `${day}T${hours}:${minutes}:${seconds}.000Z`;
+      return Number.isNaN(Date.parse(iso))
+        ? null
+        : { earliest: iso, latest: iso, precision: 'exact', confidence: 0.9 };
+    }
+    const earliest = `${day}T${hours}:${minutes}:00.000Z`;
+    const latest = `${day}T${hours}:${minutes}:59.999Z`;
+    return Number.isNaN(Date.parse(earliest))
+      ? null
+      : { earliest, latest, precision: 'minute', confidence: 0.85 };
+  }
+
+  if (date) {
+    const earliest = `${date[0]}T00:00:00.000Z`;
+    const latest = `${date[0]}T23:59:59.999Z`;
+    return Number.isNaN(Date.parse(earliest))
+      ? null
+      : { earliest, latest, precision: 'day', confidence: 0.6 };
+  }
+
+  return null;
+}
+
+/**
+ * The full source line a claim was quoted from. Line-level extraction drops a
+ * leading timestamp out of the quotation, and that timestamp is exactly what
+ * makes the claim placeable.
+ */
+function claimSourceLine(state: CaseState, claim: Claim): string {
+  const artifact = state.evidence.find((item) => item.id === claim.sourceEvidenceId);
+  if (!artifact?.content) return claim.verbatim;
+  const line = artifact.content
+    .split(/\r?\n/u)
+    .find((candidate) => candidate.includes(claim.verbatim));
+  return line ?? claim.verbatim;
 }

@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
   createSampleCase,
@@ -36,8 +36,17 @@ export interface CaseStore {
   ): Promise<CasePacket>;
   diagnostics(): Promise<StoreDiagnostics>;
   saveCase(state: CaseState): Promise<void>;
+  /** Removes a case permanently. Bundled fixtures are refused. */
+  deleteCase(caseId: string): Promise<boolean>;
   resetDemo(caseId?: string): Promise<CaseState>;
   close(): Promise<void>;
+}
+
+/** The two bundled fixtures back the demo and the Playwright spec. */
+const bundledCaseIds = new Set([sampleCaseId, hackathonCaseId]);
+
+export function isBundledCase(caseId: string): boolean {
+  return bundledCaseIds.has(caseId);
 }
 
 function isCaseState(value: unknown): value is CaseState {
@@ -303,6 +312,19 @@ export class JsonCaseStore implements CaseStore {
       await rename(temporaryPath, statePath);
     });
     await this.writeQueue;
+  }
+
+  async deleteCase(caseId: string): Promise<boolean> {
+    if (isBundledCase(caseId)) {
+      throw new Error(`${caseId} is a bundled fixture and cannot be deleted.`);
+    }
+    try {
+      await rm(this.casePath(caseId));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
   }
 
   async resetDemo(caseId = sampleCaseId): Promise<CaseState> {
@@ -914,6 +936,19 @@ export class MongoCaseStore implements CaseStore {
         snapshotRevision: { $ne: snapshotRevision },
       });
     }
+  }
+
+  async deleteCase(caseId: string): Promise<boolean> {
+    if (isBundledCase(caseId)) {
+      throw new Error(`${caseId} is a bundled fixture and cannot be deleted.`);
+    }
+    const meta = await this.database
+      .collection<MongoCaseMeta>('case_meta')
+      .deleteOne({ _id: caseId });
+    for (const collectionName of Object.values(collectionMap)) {
+      await this.collection(collectionName).deleteMany({ caseId });
+    }
+    return meta.deletedCount > 0;
   }
 
   async resetDemo(caseId = sampleCaseId): Promise<CaseState> {
