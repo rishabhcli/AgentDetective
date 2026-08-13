@@ -1,10 +1,18 @@
+import { admiraltyStrength, allenRelation } from './reasoning.js';
 import type {
+  Assumption,
+  Belief,
+  CaseState,
   Claim,
+  EdgeContribution,
   Entity,
   EntityKind,
+  LensId,
   Observation,
   ResolutionSignal,
   UnresolvedReference,
+  WorldEdge,
+  WorldPredicate,
 } from './types.js';
 
 /**
@@ -828,4 +836,545 @@ export function resolveEntities(
   }
 
   return { entities, references };
+}
+
+/**
+ * How far a derived relationship sits from what a record literally says. Both
+ * leaps are real, so both become assumptions an investigator can attack.
+ */
+const LEAPS = {
+  'co-presence': {
+    id: 'A-LEAP-CO-PRESENCE',
+    label: 'Things named in one observation were actually together',
+    detail:
+      'A single observation naming two participants is read as placing them in contact. The observation may instead be listing them, comparing them, or describing them at different moments.',
+    discount: 0.85,
+  },
+  testimony: {
+    id: 'A-LEAP-TESTIMONY',
+    label: 'The speaker described this relationship accurately',
+    detail:
+      'The relationship is carried by what someone said rather than by anything recorded. It fails if the speaker was mistaken, hedging, repeating hearsay, or lying.',
+    discount: 0.6,
+  },
+} as const;
+
+type LeapKind = keyof typeof LEAPS;
+
+/** Agent-like kinds sort first so an asymmetric predicate gets a stable subject. */
+const KIND_RANK: Record<EntityKind, number> = {
+  person: 0,
+  organization: 1,
+  identity: 2,
+  vehicle: 3,
+  device: 4,
+  account: 5,
+  object: 6,
+  location: 7,
+  event: 8,
+  'time-interval': 9,
+};
+
+const PLACE_KINDS = new Set<EntityKind>(['location']);
+const THING_KINDS = new Set<EntityKind>(['object', 'vehicle', 'device', 'account']);
+
+function predicateFor(subject: EntityKind, object: EntityKind): WorldPredicate {
+  if (PLACE_KINDS.has(object) && !PLACE_KINDS.has(subject)) return 'OBSERVED_AT';
+  if (subject === 'person' && object === 'person') return 'MET_WITH';
+  if (subject === 'person' && THING_KINDS.has(object)) return 'USES';
+  if (subject === 'person' && object === 'organization') return 'PARTICIPATED_IN';
+  if (subject === 'person' && object === 'event') return 'PARTICIPATED_IN';
+  return 'INVOLVES';
+}
+
+function lensesFor(kinds: readonly EntityKind[]): LensId[] {
+  const lenses = new Set<LensId>(['theory']);
+  for (const kind of kinds) {
+    if (kind === 'person' || kind === 'organization' || kind === 'identity') {
+      lenses.add('people');
+    }
+    if (PLACE_KINDS.has(kind)) lenses.add('place');
+    if (THING_KINDS.has(kind)) lenses.add('objects');
+    if (kind === 'event' || kind === 'time-interval') lenses.add('time');
+  }
+  return [...lenses];
+}
+
+export interface WorldEdgeDerivationInput {
+  caseId: string;
+  observations: readonly Observation[];
+  claims: readonly Claim[];
+  entities: readonly Entity[];
+  mentions: readonly EntityMention[];
+  timestamp?: string;
+}
+
+export interface WorldEdgeDerivationResult {
+  edges: WorldEdge[];
+  assumptions: Assumption[];
+}
+
+interface EdgeAccumulator {
+  subject: Entity;
+  object: Entity;
+  predicate: WorldPredicate;
+  observationIds: string[];
+  claimIds: string[];
+  contributions: EdgeContribution[];
+  leaps: Set<LeapKind>;
+  supports: number[];
+  validTime: WorldEdge['validTime'];
+  evidenceIds: Set<string>;
+}
+
+/**
+ * Relationships implied by two entities appearing in the same record.
+ *
+ * Nothing here promotes a claim to a world fact silently: an edge read from
+ * testimony is scored through its Admiralty rating, discounted for the leap,
+ * and bound to the assumption that the speaker was accurate.
+ */
+export function deriveWorldEdges(
+  input: WorldEdgeDerivationInput,
+): WorldEdgeDerivationResult {
+  const transactionTime = input.timestamp ?? new Date().toISOString();
+  const entityByNormalized = new Map<string, Entity>();
+  for (const entity of input.entities) {
+    entityByNormalized.set(entity.label.toLocaleLowerCase(), entity);
+    for (const alias of entity.aliases) {
+      entityByNormalized.set(alias.toLocaleLowerCase(), entity);
+    }
+  }
+
+  const observationById = new Map(input.observations.map((item) => [item.id, item]));
+  const claimById = new Map(input.claims.map((item) => [item.id, item]));
+
+  const mentionsByRecord = new Map<string, EntityMention[]>();
+  for (const mention of input.mentions) {
+    if (mention.vague) continue;
+    const bucket = mentionsByRecord.get(mention.sourceRecordId);
+    if (bucket) bucket.push(mention);
+    else mentionsByRecord.set(mention.sourceRecordId, [mention]);
+  }
+
+  const accumulators = new Map<string, EdgeAccumulator>();
+  const recordOrder = [
+    ...input.observations.map((item) => item.id),
+    ...input.claims.map((item) => item.id),
+  ];
+
+  for (const recordId of recordOrder) {
+    const recordMentions = mentionsByRecord.get(recordId) ?? [];
+    const observation = observationById.get(recordId);
+    const claim = claimById.get(recordId);
+    if (!observation && !claim) continue;
+
+    const resolved: Array<{ entity: Entity; mention: EntityMention }> = [];
+    const seen = new Set<string>();
+    for (const mention of recordMentions) {
+      const entity = entityByNormalized.get(mention.normalized);
+      if (!entity || seen.has(entity.id)) continue;
+      seen.add(entity.id);
+      resolved.push({ entity, mention });
+    }
+
+    const leap: LeapKind = observation ? 'co-presence' : 'testimony';
+    const base = observation
+      ? observation.extractionConfidence
+      : admiraltyStrength(
+          claim?.sourceReliability ?? 'F',
+          claim?.informationCredibility ?? 6,
+        ).combinedStrength;
+
+    for (let left = 0; left < resolved.length; left += 1) {
+      for (let right = left + 1; right < resolved.length; right += 1) {
+        const a = resolved[left];
+        const b = resolved[right];
+        if (!a || !b) continue;
+        if (a.entity.id === b.entity.id) continue;
+
+        const aRank = KIND_RANK[a.entity.kind];
+        const bRank = KIND_RANK[b.entity.kind];
+        const [subjectSide, objectSide] =
+          aRank < bRank || (aRank === bRank && a.entity.id <= b.entity.id)
+            ? [a, b]
+            : [b, a];
+        const predicate = predicateFor(subjectSide.entity.kind, objectSide.entity.kind);
+        const key = `${subjectSide.entity.id}|${predicate}|${objectSide.entity.id}`;
+
+        const support = round(
+          base *
+            a.mention.confidence *
+            b.mention.confidence *
+            subjectSide.entity.confidence *
+            objectSide.entity.confidence *
+            LEAPS[leap].discount,
+          4,
+        );
+
+        const existing = accumulators.get(key);
+        const accumulator: EdgeAccumulator = existing ?? {
+          subject: subjectSide.entity,
+          object: objectSide.entity,
+          predicate,
+          observationIds: [],
+          claimIds: [],
+          contributions: [],
+          leaps: new Set<LeapKind>(),
+          supports: [],
+          validTime: null,
+          evidenceIds: new Set<string>(),
+        };
+
+        if (observation) {
+          if (!accumulator.observationIds.includes(observation.id)) {
+            accumulator.observationIds.push(observation.id);
+          }
+          // Time is copied from the record, never synthesized for the edge.
+          if (!accumulator.validTime && observation.interval) {
+            accumulator.validTime = structuredClone(observation.interval);
+          }
+          accumulator.evidenceIds.add(observation.sourceEvidenceId);
+        } else if (claim) {
+          if (!accumulator.claimIds.includes(claim.id)) {
+            accumulator.claimIds.push(claim.id);
+          }
+          if (!accumulator.validTime && claim.interval) {
+            accumulator.validTime = structuredClone(claim.interval);
+          }
+          accumulator.evidenceIds.add(claim.sourceEvidenceId);
+        }
+        accumulator.leaps.add(leap);
+        accumulator.supports.push(support);
+        accumulator.contributions.push({
+          sourceId: recordId,
+          label: observation
+            ? `${subjectSide.entity.label} and ${objectSide.entity.label} appear in the same observation`
+            : `${claim?.speaker ?? 'The artifact'} relates ${subjectSide.entity.label} to ${objectSide.entity.label}`,
+          weight: support,
+          polarity: 'support',
+        });
+        accumulators.set(key, accumulator);
+      }
+    }
+  }
+
+  const assumptionUsage = new Map<LeapKind, Set<string>>();
+  const edges: WorldEdge[] = [];
+
+  for (const accumulator of accumulators.values()) {
+    // Independent supports combine as a noisy-OR: two weak sources are worth
+    // more than either alone, and neither ever reaches certainty.
+    const combined = accumulator.supports.reduce(
+      (survivingDoubt, support) => survivingDoubt * (1 - support),
+      1,
+    );
+    const confidence = round(Math.min(0.95, 1 - combined), 2);
+    const leaps = [...accumulator.leaps];
+    for (const leap of leaps) {
+      const bucket = assumptionUsage.get(leap) ?? new Set<string>();
+      for (const evidenceId of accumulator.evidenceIds) bucket.add(evidenceId);
+      assumptionUsage.set(leap, bucket);
+    }
+
+    edges.push({
+      id: `WE-${slug(accumulator.subject.id.replace(/^E-/u, ''))}-${slug(accumulator.predicate)}-${slug(accumulator.object.id.replace(/^E-/u, ''))}`,
+      caseId: input.caseId,
+      subjectId: accumulator.subject.id,
+      predicate: accumulator.predicate,
+      objectId: accumulator.object.id,
+      confidence,
+      sourceClaimIds: accumulator.claimIds,
+      sourceObservationIds: accumulator.observationIds,
+      contributions: accumulator.contributions,
+      validTime: accumulator.validTime,
+      transactionTime,
+      disputed: false,
+      alternatives: [],
+      createdByAgent: 'linker',
+      assumptionIds: leaps.map((leap) => LEAPS[leap].id),
+      lenses: lensesFor([accumulator.subject.kind, accumulator.object.kind]),
+    });
+  }
+
+  const assumptions: Assumption[] = [...assumptionUsage.entries()].map(
+    ([leap, evidenceIds]) => ({
+      id: LEAPS[leap].id,
+      caseId: input.caseId,
+      label: LEAPS[leap].label,
+      detail: LEAPS[leap].detail,
+      status: 'valid',
+      sourceEvidenceIds: [...evidenceIds],
+      invalidatedByEvidenceId: null,
+    }),
+  );
+
+  return { edges, assumptions };
+}
+
+export interface NewCaseInput {
+  id: string;
+  title: string;
+  subtitle?: string;
+  reference?: string;
+  classification?: string;
+  location?: string;
+  synthetic?: boolean;
+  timestamp?: string;
+}
+
+/**
+ * A case with nothing in it. Everything a case knows arrives through evidence,
+ * so a new investigation starts empty rather than pre-seeded with structure.
+ */
+export function createEmptyCase(input: NewCaseInput): CaseState {
+  const createdAt = input.timestamp ?? new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    metadata: {
+      id: input.id,
+      title: input.title,
+      subtitle: input.subtitle ?? 'No evidence has been ingested yet.',
+      reference: input.reference ?? input.id.toLocaleUpperCase(),
+      classification: input.classification ?? 'Working case file',
+      location: input.location ?? 'Unspecified',
+      status: 'active',
+      synthetic: input.synthetic ?? false,
+      createdAt,
+      updatedAt: createdAt,
+      revision: 0,
+    },
+    evidence: [],
+    observations: [],
+    claims: [],
+    entities: [],
+    worldEdges: [],
+    unresolvedReferences: [],
+    assumptions: [],
+    beliefs: [],
+    beliefEdges: [],
+    reconstructions: [],
+    anomalies: [],
+    worldMemory: [],
+    evidenceMemory: [],
+    beliefMemory: [],
+    proceduralMemory: [],
+    casePackets: [],
+    researchSessions: [],
+    agentRuns: [],
+    missions: [],
+    standingOrders: [],
+    clarifications: [],
+    temporalConstraints: [],
+    revisions: [],
+  };
+}
+
+/** Allen relations in which two intervals do not share a moment. */
+const DISJOINT_RELATIONS = new Set(['before', 'after', 'meets', 'met-by']);
+
+const NEGATION_MARKERS = new Set([
+  'not',
+  'never',
+  'no',
+  'none',
+  'nobody',
+  'nothing',
+  'cannot',
+  'denied',
+  'denies',
+  'deny',
+  'false',
+  'untrue',
+  'without',
+]);
+
+const CONTENT_STOPWORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'was',
+  'were',
+  'is',
+  'are',
+  'am',
+  'be',
+  'been',
+  'being',
+  'at',
+  'in',
+  'on',
+  'of',
+  'to',
+  'for',
+  'from',
+  'with',
+  'and',
+  'or',
+  'but',
+  'had',
+  'has',
+  'have',
+  'did',
+  'do',
+  'does',
+  'that',
+  'this',
+  'it',
+  'he',
+  'she',
+  'they',
+  'i',
+  'we',
+  'you',
+  'there',
+  'then',
+  'so',
+  'as',
+  'by',
+]);
+
+function contentTokens(text: string): Set<string> {
+  const tokens = text
+    .toLocaleLowerCase()
+    .replace(/n['’]t\b/gu, ' not')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+  return new Set(
+    tokens.filter(
+      (token) => !CONTENT_STOPWORDS.has(token) && !NEGATION_MARKERS.has(token),
+    ),
+  );
+}
+
+function hasNegation(text: string): boolean {
+  const tokens = text
+    .toLocaleLowerCase()
+    .replace(/n['’]t\b/gu, ' not')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+  return tokens.some((token) => NEGATION_MARKERS.has(token));
+}
+
+function jaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared += 1;
+  return shared / (left.size + right.size - shared);
+}
+
+export interface ContradictionResult {
+  beliefs: Belief[];
+  /** Edges that are now in tension and should be shown as disputed. */
+  disputedEdgeIds: string[];
+}
+
+/**
+ * Two kinds of conflict the record can carry on its own: a participant placed
+ * in two incompatible places at one time, and one artifact denying what
+ * another asserts.
+ *
+ * Both are read conservatively. Without a time on both sides, two placements
+ * are merely two placements — saying otherwise would invent the conflict.
+ */
+export function detectContradictions(state: CaseState): ContradictionResult {
+  const beliefs: Belief[] = [];
+  const disputed = new Set<string>();
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  const placements = state.worldEdges.filter(
+    (edge) => edge.predicate === 'OBSERVED_AT' && edge.validTime !== null,
+  );
+  for (let left = 0; left < placements.length; left += 1) {
+    for (let right = left + 1; right < placements.length; right += 1) {
+      const a = placements[left];
+      const b = placements[right];
+      if (!a || !b) continue;
+      if (a.subjectId !== b.subjectId) continue;
+      if (a.objectId === b.objectId) continue;
+      if (!a.validTime || !b.validTime) continue;
+
+      let relation: string;
+      try {
+        relation = allenRelation(a.validTime, b.validTime);
+      } catch {
+        // An unparseable interval is not evidence of a conflict.
+        continue;
+      }
+      if (DISJOINT_RELATIONS.has(relation)) continue;
+
+      const [first, second] = a.id <= b.id ? [a, b] : [b, a];
+      disputed.add(first.id);
+      disputed.add(second.id);
+      beliefs.push({
+        id: `B-CONTRA-${first.id}-${second.id}`,
+        caseId: state.metadata.id,
+        kind: 'contradiction',
+        label: `${labelOf(a.subjectId)} is placed at both ${labelOf(first.objectId)} and ${labelOf(second.objectId)} at the same time`,
+        detail: `${first.id} holds ${first.validTime?.earliest ?? 'unknown'}–${first.validTime?.latest ?? 'unknown'} and ${second.id} holds ${second.validTime?.earliest ?? 'unknown'}–${second.validTime?.latest ?? 'unknown'}. The intervals ${relation}, so at least one placement is wrong or one of the two locations is not what it appears to be.`,
+        status: 'contested',
+        confidence: round(Math.min(first.confidence, second.confidence), 2),
+        sourceIds: [
+          first.id,
+          second.id,
+          ...first.sourceObservationIds,
+          ...second.sourceObservationIds,
+        ],
+        // The conflict holds exactly when both derivations hold, so its
+        // environment is the union of what each one assumed.
+        environments: [[...new Set([...first.assumptionIds, ...second.assumptionIds])]],
+        survivingEnvironments: [
+          [...new Set([...first.assumptionIds, ...second.assumptionIds])],
+        ],
+      });
+    }
+  }
+
+  const claims = state.claims;
+  for (let left = 0; left < claims.length; left += 1) {
+    for (let right = left + 1; right < claims.length; right += 1) {
+      const a = claims[left];
+      const b = claims[right];
+      if (!a || !b) continue;
+      // One source restating itself is repetition, not conflict.
+      if (a.speaker !== null && a.speaker === b.speaker) continue;
+      if (a.sourceEvidenceId === b.sourceEvidenceId) continue;
+      if (hasNegation(a.verbatim) === hasNegation(b.verbatim)) continue;
+
+      const tokensA = contentTokens(a.verbatim);
+      const tokensB = contentTokens(b.verbatim);
+      if (tokensA.size < 2 || tokensB.size < 2) continue;
+      if (jaccard(tokensA, tokensB) < 0.8) continue;
+
+      const [first, second] = a.id <= b.id ? [a, b] : [b, a];
+      beliefs.push({
+        id: `B-CONTRA-${first.id}-${second.id}`,
+        caseId: state.metadata.id,
+        kind: 'contradiction',
+        label: `${second.speaker ?? second.sourceEvidenceId} denies what ${first.speaker ?? first.sourceEvidenceId} asserts`,
+        detail: `“${first.verbatim}” and “${second.verbatim}” cannot both be accurate. Neither is promoted to a world fact while the conflict stands.`,
+        status: 'contested',
+        confidence: round(
+          Math.min(
+            admiraltyStrength(first.sourceReliability, first.informationCredibility)
+              .combinedStrength,
+            admiraltyStrength(second.sourceReliability, second.informationCredibility)
+              .combinedStrength,
+          ),
+          2,
+        ),
+        sourceIds: [first.id, second.id, first.sourceEvidenceId, second.sourceEvidenceId],
+        // Two artifacts saying opposite things is a fact about the record and
+        // does not rest on any derivation assumption.
+        environments: [[]],
+        survivingEnvironments: [[]],
+      });
+    }
+  }
+
+  return {
+    beliefs: beliefs.sort((first, second) => first.id.localeCompare(second.id)),
+    disputedEdgeIds: [...disputed].sort((first, second) => first.localeCompare(second)),
+  };
 }
