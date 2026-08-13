@@ -5,14 +5,23 @@ import {
   Check,
   ChevronDown,
   FileClock,
+  FolderPlus,
   MoreHorizontal,
+  Repeat,
   RotateCcw,
   Route,
   Scale,
   SearchCode,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
-import type { CaseMetadata, CaseState, HealthStatus } from '@thread/domain';
+import {
+  hackathonCaseId,
+  sampleCaseId,
+  type CaseMetadata,
+  type CaseState,
+  type HealthStatus,
+} from '@thread/domain';
 import { BrandMark } from './BrandMark.js';
 
 interface WorkspaceChromeProps {
@@ -27,6 +36,9 @@ interface WorkspaceChromeProps {
   onScenarios: () => void;
   onDeductions: () => void;
   onReset: () => void;
+  onNewCase: () => void;
+  onRederive: () => void;
+  onDeleteCase: () => void;
   cases: CaseMetadata[];
   onChooseCase: (caseId: string) => void;
 }
@@ -43,12 +55,19 @@ export function WorkspaceChrome({
   onScenarios,
   onDeductions,
   onReset,
+  onNewCase,
+  onRederive,
+  onDeleteCase,
   cases,
   onChooseCase,
 }: WorkspaceChromeProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const ready = Boolean(health?.ok);
+  // Only the two bundled fixtures can be restored; anything else is the
+  // investigator's own work and is deleted rather than reset.
+  const bundled =
+    state.metadata.id === sampleCaseId || state.metadata.id === hackathonCaseId;
   function choose(action: () => void) {
     setMenuOpen(false);
     moreButtonRef.current?.focus();
@@ -103,9 +122,13 @@ export function WorkspaceChrome({
             {menuOpen ? (
               <motion.div
                 className="workspace-action-menu"
-                initial={{ opacity: 0, scale: 0.94, y: -8 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.96, y: -5 }}
+                // Opacity only. A menu that slides or scales while it opens
+                // moves its own targets out from under the pointer, which costs
+                // a real click as readily as an automated one.
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.12 }}
               >
                 <button onClick={() => choose(onChanges)} aria-label="What changed?">
                   <FileClock size={15} />
@@ -158,23 +181,56 @@ export function WorkspaceChrome({
                     <small>{health?.engineLabel ?? 'Checking runtime'}</small>
                   </span>
                 </button>
-                <button
-                  className="workspace-reset"
-                  onClick={() => choose(onReset)}
-                  disabled={busyAction === 'reset'}
-                >
-                  <RotateCcw size={15} />
+                <button onClick={() => choose(onNewCase)} aria-label="Open a new case">
+                  <FolderPlus size={15} />
                   <span>
-                    <strong>
-                      {state.metadata.synthetic ? 'Reset sample' : 'Reset case'}
-                    </strong>
-                    <small>
-                      {state.metadata.synthetic
-                        ? 'Restore controlled fixture'
-                        : 'Restore the redacted Aside handoff'}
-                    </small>
+                    <strong>Open a new case</strong>
+                    <small>Start from nothing but evidence</small>
                   </span>
                 </button>
+                <button
+                  onClick={() => choose(onRederive)}
+                  disabled={busyAction !== null}
+                  aria-label="Re-derive the case"
+                >
+                  <Repeat size={15} />
+                  <span>
+                    <strong>Re-derive the case</strong>
+                    <small>Rebuild what the record supports</small>
+                  </span>
+                </button>
+                {bundled ? (
+                  <button
+                    className="workspace-reset"
+                    onClick={() => choose(onReset)}
+                    disabled={busyAction === 'reset'}
+                  >
+                    <RotateCcw size={15} />
+                    <span>
+                      <strong>
+                        {state.metadata.synthetic ? 'Reset sample' : 'Reset case'}
+                      </strong>
+                      <small>
+                        {state.metadata.synthetic
+                          ? 'Restore controlled fixture'
+                          : 'Restore the redacted Aside handoff'}
+                      </small>
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    className="workspace-reset"
+                    onClick={() => choose(onDeleteCase)}
+                    disabled={busyAction !== null}
+                    aria-label="Delete this case"
+                  >
+                    <Trash2 size={15} />
+                    <span>
+                      <strong>Delete this case</strong>
+                      <small>Removes it and everything derived from it</small>
+                    </span>
+                  </button>
+                )}
               </motion.div>
             ) : null}
           </AnimatePresence>

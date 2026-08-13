@@ -262,3 +262,45 @@ export async function resetDemo(caseId?: string): Promise<CaseState> {
   );
   return result.state;
 }
+
+export async function createCase(input: {
+  title: string;
+  subtitle?: string;
+  classification?: string;
+  location?: string;
+}): Promise<CaseState> {
+  const result = await readJson<{ state: CaseState }>(
+    await fetch('/api/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  );
+  return result.state;
+}
+
+export async function deleteCase(caseId: string): Promise<void> {
+  await readJson<{ deleted: string }>(
+    await fetch(`/api/cases/${encodeURIComponent(caseId)}`, { method: 'DELETE' }),
+  );
+}
+
+/** Invalidates a warrant and cascades the consequences through the case. */
+export async function challengeAssumption(
+  caseId: string,
+  assumptionId: string,
+): Promise<MutationResult> {
+  return readJson<MutationResult>(
+    await fetch(
+      `/api/cases/${encodeURIComponent(caseId)}/assumptions/${encodeURIComponent(assumptionId)}/challenge`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    ),
+  );
+}
+
+/** Rebuilds the derived layer from the preserved record without re-extracting. */
+export async function rederiveCase(caseId: string): Promise<MutationResult> {
+  return readJson<MutationResult>(
+    await fetch(`/api/cases/${encodeURIComponent(caseId)}/infer`, { method: 'POST' }),
+  );
+}

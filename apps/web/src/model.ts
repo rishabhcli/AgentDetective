@@ -11,6 +11,7 @@ export type Selection =
 
 export type DrawerId =
   | 'upload'
+  | 'new-case'
   | 'changes'
   | 'status'
   | 'observability'

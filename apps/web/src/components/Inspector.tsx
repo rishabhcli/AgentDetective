@@ -23,6 +23,9 @@ interface InspectorProps {
   selection: Selection;
   onSelect: (selection: Selection) => void;
   onClose: () => void;
+  /** Absent when the case cannot currently accept a mutation. */
+  onChallenge?: (assumptionId: string) => void;
+  challengeBusy?: boolean;
 }
 
 function percent(value: number): string {
@@ -56,7 +59,14 @@ function selectionForId(state: CaseState, id: string): Selection | null {
   return null;
 }
 
-export function Inspector({ state, selection, onSelect, onClose }: InspectorProps) {
+export function Inspector({
+  state,
+  selection,
+  onSelect,
+  onClose,
+  onChallenge,
+  challengeBusy,
+}: InspectorProps) {
   useDialogDismiss(onClose);
   const title = (() => {
     switch (selection.type) {
@@ -113,7 +123,13 @@ export function Inspector({ state, selection, onSelect, onClose }: InspectorProp
           </button>
         </header>
         <div className="drawer-body">
-          <InspectorBody state={state} selection={selection} onSelect={onSelect} />
+          <InspectorBody
+            state={state}
+            selection={selection}
+            onSelect={onSelect}
+            {...(onChallenge ? { onChallenge } : {})}
+            {...(challengeBusy === undefined ? {} : { challengeBusy })}
+          />
         </div>
         <footer className="drawer-footer">
           <Fingerprint size={14} aria-hidden="true" />
@@ -128,7 +144,12 @@ function InspectorBody({
   state,
   selection,
   onSelect,
-}: Pick<InspectorProps, 'state' | 'selection' | 'onSelect'>) {
+  onChallenge,
+  challengeBusy,
+}: Pick<
+  InspectorProps,
+  'state' | 'selection' | 'onSelect' | 'onChallenge' | 'challengeBusy'
+>) {
   if (selection.type === 'edge') {
     const edge = state.worldEdges.find((item) => item.id === selection.id);
     if (!edge) return <MissingRecord id={selection.id} />;
@@ -541,6 +562,9 @@ function InspectorBody({
     const dependents = state.beliefs.filter((belief) =>
       belief.environments.some((environment) => environment.includes(assumption.id)),
     );
+    const dependentEdges = state.worldEdges.filter((edge) =>
+      edge.assumptionIds.includes(assumption.id),
+    );
     return (
       <>
         <section className={`assumption-card is-${assumption.status}`}>
@@ -588,6 +612,25 @@ function InspectorBody({
             ))}
           </div>
         </section>
+        {onChallenge && assumption.status !== 'invalid' ? (
+          <section className="inspector-section challenge-section">
+            <span className="inspector-section-label">IF THIS IS WRONG</span>
+            <p className="challenge-exposure">
+              {dependentEdges.length} relationship
+              {dependentEdges.length === 1 ? '' : 's'} and {dependents.length} belief
+              {dependents.length === 1 ? '' : 's'} rest on this. Invalidating it reduces
+              each of them and rebuilds the accounts that required it. Nothing is deleted.
+            </p>
+            <button
+              className="button button-danger"
+              disabled={challengeBusy}
+              onClick={() => onChallenge(assumption.id)}
+            >
+              <AlertOctagon size={15} aria-hidden="true" />
+              {challengeBusy ? 'Cascading…' : 'Invalidate this assumption'}
+            </button>
+          </section>
+        ) : null}
       </>
     );
   }

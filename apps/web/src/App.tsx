@@ -10,11 +10,15 @@ import {
 } from '@thread/domain';
 import {
   answerEvidenceClarification,
+  challengeAssumption,
+  createCase,
+  deleteCase,
   fetchCase,
   fetchCases,
   fetchHealth,
   introduceCounterEvidence,
   investigate,
+  rederiveCase,
   runMission,
   resetDemo,
   uploadEvidence,
@@ -25,6 +29,7 @@ import {
 import { Inspector } from './components/Inspector.js';
 import { ChangeDrawer } from './components/ChangeDrawer.js';
 import { UploadDrawer } from './components/UploadDrawer.js';
+import { NewCaseDrawer, type NewCaseInput } from './components/NewCaseDrawer.js';
 import { StatusDrawer } from './components/StatusDrawer.js';
 import { ObservabilityDrawer } from './components/ObservabilityDrawer.js';
 import { InterviewDrawer } from './components/InterviewDrawer.js';
@@ -350,6 +355,31 @@ export function App() {
     }
   }, [busyAction, state]);
 
+  const handleChallenge = useCallback(
+    async (assumptionId: string) => {
+      if (!state) return;
+      try {
+        await runAction(`challenge:${assumptionId}`, () =>
+          challengeAssumption(state.metadata.id, assumptionId),
+        );
+        setDrawer('changes');
+        setSelection(null);
+      } catch {
+        // The surfaced error banner is the sole user-facing error path.
+      }
+    },
+    [runAction, state],
+  );
+
+  const handleRederive = useCallback(async () => {
+    if (!state) return;
+    try {
+      await runAction('rederive', () => rederiveCase(state.metadata.id));
+    } catch {
+      // The surfaced error banner is the sole user-facing error path.
+    }
+  }, [runAction, state]);
+
   const counterEvidencePresent = useMemo(
     () => Boolean(state?.evidence.some((item) => item.id === 'EV-143')),
     [state],
@@ -375,6 +405,44 @@ export function App() {
     },
     [activeCaseId, hasEntered],
   );
+
+  const handleNewCase = useCallback(
+    async (input: NewCaseInput) => {
+      if (busyAction) return;
+      setBusyAction('new-case');
+      setError(null);
+      try {
+        const created = await createCase(input);
+        setCases(await fetchCases());
+        setDrawer(null);
+        chooseCase(created.metadata.id);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The case was not opened.');
+        throw cause;
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    [busyAction, chooseCase],
+  );
+
+  const handleDeleteCase = useCallback(async () => {
+    if (!state || busyAction) return;
+    const removed = state.metadata.id;
+    setBusyAction('delete-case');
+    setError(null);
+    try {
+      await deleteCase(removed);
+      const remaining = await fetchCases();
+      setCases(remaining);
+      const next = remaining[0]?.id ?? sampleCaseId;
+      chooseCase(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The case was not deleted.');
+    } finally {
+      setBusyAction(null);
+    }
+  }, [busyAction, chooseCase, state]);
 
   const enterWorkspace = useCallback(() => {
     window.history.replaceState(
@@ -479,6 +547,9 @@ export function App() {
         onScenarios={() => setDrawer('scenarios')}
         onDeductions={() => setDrawer('deductions')}
         onReset={() => void handleReset()}
+        onNewCase={() => setDrawer('new-case')}
+        onRederive={() => void handleRederive()}
+        onDeleteCase={() => void handleDeleteCase()}
         cases={cases}
         onChooseCase={chooseCase}
       />
@@ -548,6 +619,8 @@ export function App() {
             selection={selection}
             onSelect={setSelection}
             onClose={() => setSelection(null)}
+            onChallenge={(assumptionId) => void handleChallenge(assumptionId)}
+            challengeBusy={busyAction?.startsWith('challenge:') ?? false}
           />
         ) : null}
         {drawer === 'changes' ? (
@@ -555,6 +628,14 @@ export function App() {
             key="changes"
             state={state}
             onSelect={setSelection}
+            onClose={() => setDrawer(null)}
+          />
+        ) : null}
+        {drawer === 'new-case' ? (
+          <NewCaseDrawer
+            key="new-case"
+            busy={busyAction === 'new-case'}
+            onSubmit={handleNewCase}
             onClose={() => setDrawer(null)}
           />
         ) : null}

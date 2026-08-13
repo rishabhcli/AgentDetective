@@ -5567,3 +5567,36 @@ p {
   align-items: center;
   gap: 10px;
 }
+
+/* Challenging an assumption is the one destructive-looking control in the
+   inspector, so it states its blast radius before it offers the button. */
+.challenge-section {
+  border-top: 1px solid rgba(225, 94, 80, 0.22);
+  padding-top: 14px;
+}
+
+.challenge-exposure {
+  margin: 8px 0 12px;
+  color: var(--paper-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.button-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-color: rgba(225, 94, 80, 0.45);
+  background: rgba(183, 70, 61, 0.16);
+  color: #e8907f;
+}
+
+.button-danger:hover:not(:disabled) {
+  border-color: #f17a6b;
+  background: rgba(200, 78, 67, 0.28);
+  color: var(--paper-bright);
+}
+
+.button-danger:disabled {
+  opacity: 0.55;
+}
