@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import {
   applyCounterEvidence,
+  challengeAssumption,
   createEmptyCase,
   inferEvidenceKind,
   ingestLocalEvidence,
@@ -70,6 +71,10 @@ const reviewFields = z.object({
 
 const researchFields = reviewFields.extend({
   scope: z.enum(['case', 'connected']).default('case'),
+});
+
+const challengeFields = z.object({
+  evidenceId: z.string().trim().min(1).max(80).optional(),
 });
 
 const newCaseFields = z.object({
@@ -1164,6 +1169,64 @@ export function createApp({
     if (!deleted) return response.status(404).json({ error: 'Case not found.' });
     return response.status(200).json({ deleted: caseId });
   });
+
+  /**
+   * Invalidates a warrant the case rests on and cascades the consequences.
+   * The investigator makes the judgment; the engine propagates it.
+   */
+  app.post(
+    '/api/cases/:caseId/assumptions/:assumptionId/challenge',
+    async (request, response) => {
+      const caseId = String(request.params.caseId);
+      const assumptionId = String(request.params.assumptionId);
+      const state = await store.getCase(caseId);
+      if (!state) return response.status(404).json({ error: 'Case not found.' });
+      if (!state.assumptions.some((item) => item.id === assumptionId)) {
+        return response.status(404).json({ error: 'Assumption not found in this case.' });
+      }
+      const parsed = challengeFields.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return response
+          .status(400)
+          .json({ error: 'Invalid challenge.', details: parsed.error.flatten() });
+      }
+      const result = challengeAssumption(state, assumptionId, {
+        ...(parsed.data.evidenceId === undefined
+          ? {}
+          : { evidenceId: parsed.data.evidenceId }),
+      });
+      if (!result.revision) {
+        return response.json({
+          state: result.state,
+          revision: null,
+          auditSteps: result.auditSteps,
+        });
+      }
+      await store.saveCase(result.state);
+      const packet = await store.buildCasePacket(
+        result.state,
+        `What survives without “${assumptionId}”?`,
+      );
+      result.state.casePackets.unshift(packet);
+      const run = await attachRun({
+        state: result.state,
+        orchestrator,
+        trigger: `Challenged assumption ${assumptionId}`,
+        affectedIds: uniqueIds(
+          [assumptionId],
+          result.revision.changes.map((change) => change.subjectId),
+        ),
+        packetId: packet.id,
+        selectedAgents: ['FALSIFIER', 'LINKER', 'HYPOTHESIS ENGINE', 'INVESTIGATOR'],
+      });
+      await store.saveCase(result.state);
+      return response.json({
+        state: result.state,
+        revision: result.revision,
+        auditSteps: [...result.auditSteps, `LangGraph run ${run.id} recorded the cascade.`],
+      });
+    },
+  );
 
   /**
    * Re-derives the whole case from its preserved records. Nothing is

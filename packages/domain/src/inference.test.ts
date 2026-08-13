@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   abduceHypotheses,
   buildReconstructions,
+  challengeAssumption,
   createEmptyCase,
   deriveTemporalConstraints,
   deriveWorldEdges,
@@ -1636,5 +1637,158 @@ describe('runInferencePass temporal enrichment', () => {
       timestamp: '2026-01-01T00:00:00.000Z',
     });
     expect(second.revision).toBeNull();
+  });
+});
+
+describe('challengeAssumption', () => {
+  function derivedCase() {
+    const state = createEmptyCase({ id: 'case-ch', title: 'Challenge' });
+    state.evidence.push({
+      id: 'EV-1',
+      caseId: 'case-ch',
+      title: 'Statement',
+      kind: 'document',
+      fileName: 's.txt',
+      mimeType: 'text/plain',
+      sha256: 'c'.repeat(64),
+      ingestedAt: '2026-08-05T00:00:00.000Z',
+      capturedAt: null,
+      sourceLabel: 'Witness',
+      chainOfCustody: 'test',
+      content: null,
+      rawLocator: null,
+      extractionStatus: 'bounded-local',
+      extractor: 'local-deterministic',
+      observationIds: ['O-1'],
+      claimIds: ['C-1'],
+      synthetic: false,
+      challengedByEvidenceIds: [],
+    });
+    state.observations.push(
+      observation({
+        id: 'O-1',
+        text: 'Marcus Webb at Warehouse A.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Ruth Sandoval',
+        verbatim: 'Dana Reyes was at Pier 48.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+    return runInferencePass(state, { timestamp: '2026-01-01T00:00:00.000Z' }).state;
+  }
+
+  it('refuses an assumption the case does not hold', () => {
+    expect(() => challengeAssumption(derivedCase(), 'A-NOT-REAL')).toThrow(/A-NOT-REAL/);
+  });
+
+  it('marks the assumption invalid and records who invalidated it', () => {
+    const result = challengeAssumption(derivedCase(), 'A-LEAP-TESTIMONY', {
+      evidenceId: 'EV-9',
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+    const assumption = result.state.assumptions.find(
+      (item) => item.id === 'A-LEAP-TESTIMONY',
+    );
+
+    expect(assumption?.status).toBe('invalid');
+    expect(assumption?.invalidatedByEvidenceId).toBe('EV-9');
+    expect(result.revision).not.toBeNull();
+  });
+
+  it('is idempotent once the assumption is already invalid', () => {
+    const once = challengeAssumption(derivedCase(), 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+    const twice = challengeAssumption(once.state, 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-04-04T00:00:00.000Z',
+    });
+    expect(twice.revision).toBeNull();
+  });
+
+  it('lowers every relationship that rested on it and marks them disputed', () => {
+    const before = derivedCase();
+    const dependent = before.worldEdges.filter((edge) =>
+      edge.assumptionIds.includes('A-LEAP-TESTIMONY'),
+    );
+    expect(dependent.length).toBeGreaterThan(0);
+
+    const after = challengeAssumption(before, 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+
+    for (const edge of dependent) {
+      const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+      expect(updated?.confidence).toBeLessThan(edge.confidence);
+      expect(updated?.disputed).toBe(true);
+      expect(updated?.contributions.some((item) => item.polarity === 'oppose')).toBe(true);
+    }
+  });
+
+  it('leaves relationships that never depended on it alone', () => {
+    const before = derivedCase();
+    const independent = before.worldEdges.filter(
+      (edge) => !edge.assumptionIds.includes('A-LEAP-TESTIMONY'),
+    );
+    expect(independent.length).toBeGreaterThan(0);
+
+    const after = challengeAssumption(before, 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+
+    for (const edge of independent) {
+      const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+      expect(updated?.confidence).toBe(edge.confidence);
+    }
+  });
+
+  it('cascades through belief environments that contained it', () => {
+    const before = derivedCase();
+    before.beliefs.push({
+      id: 'B-DEPENDENT',
+      caseId: 'case-ch',
+      kind: 'hypothesis',
+      label: 'Rests entirely on testimony',
+      detail: 'x',
+      status: 'open',
+      confidence: 0.8,
+      sourceIds: [],
+      environments: [['A-LEAP-TESTIMONY']],
+      survivingEnvironments: [['A-LEAP-TESTIMONY']],
+    });
+
+    const after = challengeAssumption(before, 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+    const belief = after.state.beliefs.find((item) => item.id === 'B-DEPENDENT');
+
+    expect(belief?.survivingEnvironments).toEqual([]);
+    expect(belief?.status).toBe('rejected');
+    expect(belief?.confidence).toBeLessThan(0.8);
+  });
+
+  it('traces what the invalidation actually took down', () => {
+    const result = challengeAssumption(derivedCase(), 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+
+    expect(result.revision?.trace.length).toBeGreaterThan(0);
+    expect(
+      result.revision?.changes.some((change) => change.direction === 'invalidated'),
+    ).toBe(true);
+    expect(result.auditSteps.join(' ')).toMatch(/ATMS|nogood/i);
+  });
+
+  it('does not mutate the state it was given', () => {
+    const original = derivedCase();
+    const snapshot = structuredClone(original);
+    challengeAssumption(original, 'A-LEAP-TESTIMONY', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+    expect(original).toEqual(snapshot);
   });
 });

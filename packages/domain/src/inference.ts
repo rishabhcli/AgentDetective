@@ -3,6 +3,7 @@ import {
   allenRelation,
   computeWeightedCoverage,
   enforceTemporalPathConsistency,
+  propagateNogood,
   rankQuestionsByInformationGain,
   type CandidateQuestion,
   type CoveragePoint,
@@ -2401,4 +2402,188 @@ function claimSourceLine(state: CaseState, claim: Claim): string {
     .split(/\r?\n/u)
     .find((candidate) => candidate.includes(claim.verbatim));
   return line ?? claim.verbatim;
+}
+
+export interface ChallengeOptions {
+  /** The artifact that broke the assumption, when one did. */
+  evidenceId?: string;
+  timestamp?: string;
+}
+
+/**
+ * Invalidates an assumption and lets the consequences fall where they fall.
+ *
+ * This is the general form of the scripted Evidence 143 cascade: any warrant in
+ * any case can be attacked, and everything resting on it is reduced through the
+ * same ATMS machinery rather than through a hand-written transition. The engine
+ * does not decide the assumption is false — an investigator does — but it is
+ * responsible for propagating that decision honestly.
+ */
+export function challengeAssumption(
+  input: CaseState,
+  assumptionId: string,
+  options: ChallengeOptions = {},
+): MutationResult {
+  const state = structuredClone(input);
+  const assumption = state.assumptions.find((item) => item.id === assumptionId);
+  if (!assumption) {
+    throw new Error(`Unknown assumption: ${assumptionId}`);
+  }
+  if (assumption.status === 'invalid') {
+    return {
+      state,
+      revision: null,
+      auditSteps: [`${assumptionId} was already invalid; nothing cascaded.`],
+    };
+  }
+
+  const timestamp = options.timestamp ?? new Date().toISOString();
+  assumption.status = 'invalid';
+  assumption.invalidatedByEvidenceId = options.evidenceId ?? null;
+  if (options.evidenceId && !assumption.sourceEvidenceIds.includes(options.evidenceId)) {
+    assumption.sourceEvidenceIds.push(options.evidenceId);
+  }
+
+  const invalidIds = new Set(
+    state.assumptions.filter((item) => item.status === 'invalid').map((item) => item.id),
+  );
+  const beliefsBefore = new Map(
+    state.beliefs.map((belief) => [belief.id, belief.status] as const),
+  );
+  state.beliefs = propagateNogood(state.beliefs, invalidIds);
+  const rejected = state.beliefs.filter(
+    (belief) => belief.status === 'rejected' && beliefsBefore.get(belief.id) !== 'rejected',
+  );
+  const weakened = state.beliefs.filter(
+    (belief) => belief.status === 'weakened' && beliefsBefore.get(belief.id) !== 'weakened',
+  );
+
+  const dependent = state.worldEdges.filter((edge) =>
+    edge.assumptionIds.includes(assumptionId),
+  );
+  const edgeChanges: CaseRevision['changes'] = [];
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  for (const edge of dependent) {
+    const before = edge.confidence;
+    // An edge that rested on several warrants does not fall as far as one that
+    // rested only on this.
+    const share = 1 / Math.max(1, edge.assumptionIds.length);
+    edge.confidence = round(edge.confidence * (1 - 0.7 * share), 2);
+    edge.disputed = true;
+    edge.transactionTime = timestamp;
+    edge.contributions.push({
+      sourceId: assumptionId,
+      label: `${assumption.label} no longer holds`,
+      weight: round(0.7 * share, 2),
+      polarity: 'oppose',
+    });
+    edgeChanges.push({
+      id: `CHANGE-${edge.id}`,
+      kind: 'edge',
+      subjectId: edge.id,
+      label: `${labelOf(edge.subjectId)} → ${labelOf(edge.objectId)}`,
+      before: `${Math.round(before * 100)}%`,
+      after: `${Math.round(edge.confidence * 100)}%`,
+      direction: 'lowered',
+    });
+  }
+
+  const disputedEdgeIds = new Set(dependent.map((edge) => edge.id));
+  let restatedStatements = 0;
+  for (const reconstruction of state.reconstructions) {
+    if (reconstruction.id.startsWith(DERIVED_RECONSTRUCTION_PREFIX)) continue;
+    // Authored accounts keep their prose; only the support labels move.
+    reconstruction.statements = reconstruction.statements.map((statement) => {
+      if (statement.status === 'DISPUTED') return statement;
+      if (!statement.sourceIds.some((id) => disputedEdgeIds.has(id))) return statement;
+      restatedStatements += 1;
+      return { ...statement, status: 'DISPUTED' };
+    });
+    reconstruction.contradictions = reconstruction.statements.filter(
+      (statement) => statement.status === 'DISPUTED',
+    ).length;
+    reconstruction.updatedAt = timestamp;
+  }
+
+  const derivedCount = state.reconstructions.filter((item) =>
+    item.id.startsWith(DERIVED_RECONSTRUCTION_PREFIX),
+  ).length;
+  if (derivedCount > 0 || state.reconstructions.length === 0) {
+    const rebuilt = buildReconstructions(state, { timestamp });
+    state.reconstructions = [
+      ...state.reconstructions.filter(
+        (item) => !item.id.startsWith(DERIVED_RECONSTRUCTION_PREFIX),
+      ),
+      ...rebuilt,
+    ];
+  }
+
+  const sequence = state.metadata.revision + 1;
+  const revisionId = `REV-${String(sequence).padStart(3, '0')}`;
+  const revision: CaseRevision = {
+    id: revisionId,
+    caseId: state.metadata.id,
+    sequence,
+    createdAt: timestamp,
+    title: `Challenged: ${assumption.label}`,
+    summary: `${dependent.length} relationship${dependent.length === 1 ? '' : 's'}, ${rejected.length} rejected and ${weakened.length} weakened belief${weakened.length === 1 ? '' : 's'} followed the assumption down.`,
+    triggerEvidenceId: options.evidenceId ?? null,
+    changes: [
+      {
+        id: `${revisionId}-C1`,
+        kind: 'assumption',
+        subjectId: assumptionId,
+        label: assumption.label,
+        before: 'Valid',
+        after: 'Invalid',
+        direction: 'invalidated',
+      },
+      ...edgeChanges.map((change, index) => ({
+        ...change,
+        id: `${revisionId}-C${index + 2}`,
+      })),
+    ],
+    trace: [
+      {
+        id: `${revisionId}-T1`,
+        kind: 'assumption',
+        label: assumption.label,
+        relation: 'was invalidated by the investigator',
+      },
+      {
+        id: `${revisionId}-T2`,
+        kind: 'evidence',
+        label: `${dependent.length} relationship${dependent.length === 1 ? '' : 's'} rested on it`,
+        relation: 'lost the share of their confidence it carried',
+      },
+      {
+        id: `${revisionId}-T3`,
+        kind: 'hypothesis',
+        label: `${rejected.length} belief${rejected.length === 1 ? '' : 's'} lost every surviving environment`,
+        relation: 'were rejected by ATMS nogood propagation',
+      },
+      {
+        id: `${revisionId}-T4`,
+        kind: 'reconstruction',
+        label: `${restatedStatements} authored statement${restatedStatements === 1 ? '' : 's'} became disputed`,
+        relation: 'and the derived accounts were rebuilt',
+      },
+    ],
+  };
+  state.revisions.unshift(revision);
+  state.metadata.revision = sequence;
+  state.metadata.updatedAt = timestamp;
+
+  return {
+    state,
+    revision,
+    auditSteps: [
+      `FALSIFIER marked ${assumptionId} as an ATMS nogood.`,
+      `${rejected.length} belief${rejected.length === 1 ? '' : 's'} lost every surviving environment; ${weakened.length} ${weakened.length === 1 ? 'was' : 'were'} weakened.`,
+      `LINKER reduced ${dependent.length} dependent relationship${dependent.length === 1 ? '' : 's'} and recorded an opposing contribution on each.`,
+      `HYPOTHESIS ENGINE rebuilt ${derivedCount} derived account${derivedCount === 1 ? '' : 's'} and restated ${restatedStatements} authored statement${restatedStatements === 1 ? '' : 's'}.`,
+    ],
+  };
 }
