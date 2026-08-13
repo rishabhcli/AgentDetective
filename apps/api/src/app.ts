@@ -15,9 +15,11 @@ import {
   type AgentMission,
   type AgentMissionStep,
   type AgentRun,
+  type AgentRunStep,
   type CasePacket,
   type CaseResearchSession,
   type CaseState,
+  type DerivationStageReport,
   type EvidenceClarification,
   type EvidenceIngestionReceipt,
   type EvidenceKind,
@@ -279,6 +281,51 @@ const previewMimeTypes: Record<string, string> = {
   '.webp': 'image/webp',
   '.gif': 'image/gif',
 };
+
+/**
+ * Builds the run ledger from what the derivation actually reported.
+ *
+ * Hand-written step prose at the call site drifts from the work it describes —
+ * the LINKER entry here once claimed no relationship had been promoted while
+ * the pass beside it was deriving them. The ledger is now the report.
+ */
+function ledgerFromStages(
+  reports: readonly DerivationStageReport[],
+  overrides: Partial<
+    Record<
+      AgentName,
+      {
+        provider: AgentRunStep['provider'];
+        model: string | null;
+        detail?: string;
+        inputIds?: string[];
+        outputIds?: string[];
+      }
+    >
+  > = {},
+): {
+  selectedAgents: AgentName[];
+  providerDetails: NonNullable<Parameters<AgentOrchestrator['run']>[0]['providerDetails']>;
+} {
+  const providerDetails: NonNullable<
+    Parameters<AgentOrchestrator['run']>[0]['providerDetails']
+  > = {};
+  const selectedAgents: AgentName[] = [];
+  for (const report of reports) {
+    const override = overrides[report.agent];
+    providerDetails[report.agent] = {
+      provider: override?.provider ?? 'deterministic',
+      model: override?.model ?? null,
+      detail: override?.detail ?? report.detail,
+      inputIds: override?.inputIds ?? report.inputIds,
+      outputIds: override?.outputIds ?? report.outputIds,
+    };
+    // An overridden stage was performed by something outside the pass, so it
+    // counts as selected even when the pass itself had nothing to add.
+    if (report.status !== 'skipped' || override) selectedAgents.push(report.agent);
+  }
+  return { selectedAgents, providerDetails };
+}
 
 async function attachRun(input: {
   state: CaseState;
@@ -1250,6 +1297,7 @@ export function createApp({
       'What does the case record support after re-derivation?',
     );
     result.state.casePackets.unshift(packet);
+    const ledger = ledgerFromStages(result.stageReports);
     const run = await attachRun({
       state: result.state,
       orchestrator,
@@ -1259,14 +1307,8 @@ export function createApp({
         result.state.worldEdges.map((item) => item.id),
       ),
       packetId: packet.id,
-      selectedAgents: [
-        'RESOLVER',
-        'CHRONOLOGIST',
-        'LINKER',
-        'HYPOTHESIS ENGINE',
-        'FALSIFIER',
-        'INVESTIGATOR',
-      ],
+      selectedAgents: ledger.selectedAgents,
+      providerDetails: ledger.providerDetails,
     });
     await store.saveCase(result.state);
     return response.json({
@@ -1808,8 +1850,6 @@ export function createApp({
       // Preserving an artifact is not the same as understanding it. The
       // derivation pass is what turns the preserved record into entities,
       // relationships, contradictions and ranked questions.
-      const entitiesBefore = result.state.entities.length;
-      const edgesBefore = result.state.worldEdges.length;
       const inference = runInferencePass(result.state, {
         ...(result.revision ? { timestamp: result.revision.createdAt } : {}),
         // Only the newly preserved artifact is read for mentions and
@@ -1820,8 +1860,6 @@ export function createApp({
       });
       result.state = inference.state;
       result.auditSteps.push(...inference.auditSteps);
-      const derivedEntities = result.state.entities.length - entitiesBefore;
-      const derivedEdges = result.state.worldEdges.length - edgesBefore;
       if (result.revision) {
         await store.saveCase(result.state);
         const evidenceId = result.revision.triggerEvidenceId;
@@ -1839,9 +1877,6 @@ export function createApp({
         const uploadedClaims = result.state.claims.filter(
           (item) => item.sourceEvidenceId === evidenceId,
         );
-        const uploadedReferences = result.state.unresolvedReferences.filter((item) =>
-          evidenceId ? item.sourceEvidenceIds.includes(evidenceId) : false,
-        );
         const ingestorProvider =
           extraction.extractor === 'elevenlabs'
             ? ('elevenlabs' as const)
@@ -1856,6 +1891,23 @@ export function createApp({
                 environment.FIREWORKS_VISION_MODEL ??
                 'accounts/fireworks/models/inkling')
               : null;
+        const ledger = ledgerFromStages(inference.stageReports, {
+          INGESTOR: {
+            provider: ingestorProvider,
+            model: ingestorModel,
+            detail:
+              extraction.extractor === 'elevenlabs'
+                ? `Scribe v2 produced a verbatim transcript and ${uploadedObservations.length} source-bound observation${uploadedObservations.length === 1 ? '' : 's'}.`
+                : extraction.extractor === 'fireworks'
+                  ? `Fireworks returned ${uploadedObservations.length} schema-validated atomic visual observation${uploadedObservations.length === 1 ? '' : 's'}.`
+                  : `The local extractor preserved ${uploadedArtifact?.extractionStatus ?? 'unknown'} output as ${uploadedObservations.length} observation${uploadedObservations.length === 1 ? '' : 's'} and ${uploadedClaims.length} attributed claim${uploadedClaims.length === 1 ? '' : 's'}.`,
+            inputIds: evidenceId ? [evidenceId] : [],
+            outputIds: uniqueIds(
+              uploadedObservations.map((item) => item.id),
+              uploadedClaims.map((item) => item.id),
+            ),
+          },
+        });
         const run = await attachRun({
           state: result.state,
           orchestrator,
@@ -1866,80 +1918,8 @@ export function createApp({
             packet.evidenceIds,
           ),
           packetId: packet.id,
-          selectedAgents: [
-            'INGESTOR',
-            'RESOLVER',
-            'CHRONOLOGIST',
-            'LINKER',
-            'HYPOTHESIS ENGINE',
-            'FALSIFIER',
-            'INVESTIGATOR',
-          ],
-          providerDetails: {
-            INGESTOR: {
-              provider: ingestorProvider,
-              model: ingestorModel,
-              detail:
-                extraction.extractor === 'elevenlabs'
-                  ? `Scribe v2 produced a verbatim transcript and ${uploadedObservations.length} source-bound observation${uploadedObservations.length === 1 ? '' : 's'}.`
-                  : extraction.extractor === 'fireworks'
-                    ? `Fireworks returned ${uploadedObservations.length} schema-validated atomic visual observation${uploadedObservations.length === 1 ? '' : 's'}.`
-                    : `The local extractor preserved ${uploadedArtifact?.extractionStatus ?? 'unknown'} output as ${uploadedObservations.length} observation${uploadedObservations.length === 1 ? '' : 's'} and ${uploadedClaims.length} attributed claim${uploadedClaims.length === 1 ? '' : 's'}.`,
-              inputIds: evidenceId ? [evidenceId] : [],
-              outputIds: uniqueIds(
-                uploadedObservations.map((item) => item.id),
-                uploadedClaims.map((item) => item.id),
-              ),
-            },
-            RESOLVER: {
-              provider: 'deterministic',
-              model: null,
-              detail: `Derived ${derivedEntities} entit${derivedEntities === 1 ? 'y' : 'ies'} and retained ${uploadedReferences.length} vague reference${uploadedReferences.length === 1 ? '' : 's'} as unresolved candidates; no entity was hard-merged.`,
-              inputIds: uploadedClaims.map((item) => item.id),
-              outputIds: uploadedReferences.map((item) => item.id),
-            },
-            CHRONOLOGIST: {
-              provider: 'deterministic',
-              model: null,
-              detail: `Checked ${uploadedObservations.filter((item) => item.interval).length} extracted time interval${uploadedObservations.filter((item) => item.interval).length === 1 ? '' : 's'} without inventing missing precision.`,
-              inputIds: uploadedObservations.map((item) => item.id),
-              outputIds: uploadedObservations
-                .filter((item) => item.interval)
-                .map((item) => item.id),
-            },
-            LINKER: {
-              provider: 'deterministic',
-              model: null,
-              detail: `Derived ${derivedEdges} relationship${derivedEdges === 1 ? '' : 's'}; each one carries its source records and the assumption its derivation required.`,
-              inputIds: uploadedObservations.map((item) => item.id),
-              outputIds: result.state.worldEdges
-                .slice(0, derivedEdges)
-                .map((item) => item.id),
-            },
-            'HYPOTHESIS ENGINE': {
-              provider: 'deterministic',
-              model: null,
-              detail: `Rebuilt ${result.state.reconstructions.length} competing account${result.state.reconstructions.length === 1 ? '' : 's'} without selecting one.`,
-              inputIds: result.state.worldEdges.map((item) => item.id),
-              outputIds: result.state.reconstructions.map((item) => item.id),
-            },
-            FALSIFIER: {
-              provider: 'deterministic',
-              model: null,
-              detail: `${result.state.beliefs.filter((item) => item.kind === 'contradiction').length} contradiction${result.state.beliefs.filter((item) => item.kind === 'contradiction').length === 1 ? '' : 's'} currently stand on the record.`,
-              inputIds: result.state.worldEdges.map((item) => item.id),
-              outputIds: result.state.beliefs
-                .filter((item) => item.kind === 'contradiction')
-                .map((item) => item.id),
-            },
-            INVESTIGATOR: {
-              provider: 'deterministic',
-              model: null,
-              detail: `Ranked ${result.state.anomalies.length} open question${result.state.anomalies.length === 1 ? '' : 's'} by expected information gain.`,
-              inputIds: [],
-              outputIds: result.state.anomalies.map((item) => item.id),
-            },
-          },
+          selectedAgents: ledger.selectedAgents,
+          providerDetails: ledger.providerDetails,
         });
         result.auditSteps.push(
           `${packet.retrievalMethod} built ${packet.id}.`,

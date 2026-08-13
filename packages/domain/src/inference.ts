@@ -9,6 +9,7 @@ import {
   type CoveragePoint,
 } from './reasoning.js';
 import type {
+  AgentName,
   Anomaly,
   Assumption,
   Belief,
@@ -2089,28 +2090,144 @@ function mergeById<T extends { id: string }>(existing: T[], derived: readonly T[
  * `MutationResult` contract the routes already consume, and a pass that finds
  * nothing new returns a null revision so the caller skips persistence.
  */
+export interface DerivationStageReport {
+  agent: AgentName;
+  status: 'completed' | 'skipped' | 'failed';
+  detail: string;
+  inputIds: string[];
+  outputIds: string[];
+  durationMs: number;
+}
+
+export type DerivationConcernKind =
+  'open-contradiction' | 'unresolved-identity' | 'uncorroborated' | 'thin-entity';
+
+export interface DerivationConcern {
+  id: string;
+  kind: DerivationConcernKind;
+  label: string;
+  detail: string;
+  subjectIds: string[];
+  /** 0..1 — how much of the case's standing is exposed to this. */
+  exposure: number;
+}
+
+export interface InferencePassResult extends MutationResult {
+  /** One entry per agent, in chain order, describing what it actually did. */
+  stageReports: DerivationStageReport[];
+  concerns: DerivationConcern[];
+}
+
+/**
+ * What the derivation is least entitled to.
+ *
+ * The engine grades its own output so the weakest parts are visible without
+ * having to be hunted for. Nothing here changes the case; it only says where
+ * the case would break first.
+ */
+export function assessDerivation(state: CaseState): DerivationConcern[] {
+  const concerns: DerivationConcern[] = [];
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  for (const belief of state.beliefs) {
+    if (belief.kind !== 'contradiction' || belief.status === 'rejected') continue;
+    concerns.push({
+      id: `CONCERN-${belief.id}`,
+      kind: 'open-contradiction',
+      label: belief.label,
+      detail:
+        'Two things the record supports cannot both be true. Until this is settled every account that uses either side inherits the conflict.',
+      subjectIds: [belief.id, ...belief.sourceIds],
+      exposure: 0.9,
+    });
+  }
+
+  for (const reference of state.unresolvedReferences) {
+    if (reference.status === 'resolved') continue;
+    if (reference.candidateBindings.length < 2) continue;
+    const leading = [...reference.candidateBindings].sort(
+      (left, right) => right.probability - left.probability,
+    )[0];
+    concerns.push({
+      id: `CONCERN-${reference.id}`,
+      kind: 'unresolved-identity',
+      label: `“${reference.surfaceForm}” is still a distribution, not a name`,
+      detail: `The leading binding holds ${Math.round((leading?.probability ?? 0) * 100)}% of the mass. Everything derived through this reference carries that spread.`,
+      subjectIds: [reference.id],
+      exposure: round(1 - (leading?.probability ?? 0)),
+    });
+  }
+
+  for (const edge of state.worldEdges) {
+    const artifacts = artifactsBehind(state, edge);
+    if (artifacts.size !== 1) continue;
+    concerns.push({
+      id: `CONCERN-${edge.id}`,
+      kind: 'uncorroborated',
+      label: `${labelOf(edge.subjectId)} → ${labelOf(edge.objectId)} rests on one artifact`,
+      detail: `Only ${[...artifacts][0] ?? 'one source'} supports this. It inherits every failure mode of that single artifact, and nothing in the case would reveal the failure.`,
+      subjectIds: [edge.id],
+      exposure: round(edge.confidence),
+    });
+  }
+
+  for (const entity of state.entities) {
+    const mentionCount = entity.properties.mentionIds?.length ?? 0;
+    const thin =
+      mentionCount === 1 ||
+      (entity.sourceEvidenceIds.length === 1 && entity.confidence < 0.5);
+    if (!thin) continue;
+    concerns.push({
+      id: `CONCERN-${entity.id}`,
+      kind: 'thin-entity',
+      label: `${entity.label} was named once`,
+      detail:
+        'A participant the record mentions a single time may be central or may be noise. Nothing so far distinguishes the two.',
+      subjectIds: [entity.id],
+      exposure: round(1 - entity.confidence),
+    });
+  }
+
+  return concerns.sort(
+    (left, right) => right.exposure - left.exposure || left.id.localeCompare(right.id),
+  );
+}
+
+/**
+ * One full derivation over a case, composed from the stages above.
+ *
+ * Each stage reports what it actually did rather than having its prose written
+ * for it at the call site — a ledger assembled by the caller drifts from the
+ * work, and a ledger that drifts is worse than none. A stage with nothing to do
+ * is recorded as skipped with its reason; a stage that throws is recorded as
+ * failed and the remaining stages still run.
+ */
 export function runInferencePass(
   input: CaseState,
   options: InferencePassOptions = {},
-): MutationResult {
+): InferencePassResult {
   const state = structuredClone(input);
   const timestamp = options.timestamp ?? new Date().toISOString();
   const maxRecords = options.maxRecords ?? 1_500;
   const auditSteps: string[] = [];
+  const stageReports: DerivationStageReport[] = [];
 
-  const before = JSON.stringify([
-    state.observations,
-    state.claims,
-    state.entities,
-    state.worldEdges,
-    state.unresolvedReferences,
-    state.assumptions,
-    state.beliefs,
-    state.beliefEdges,
-    state.reconstructions,
-    state.anomalies,
-    state.temporalConstraints,
-  ]);
+  const snapshot = (): string =>
+    JSON.stringify([
+      state.observations,
+      state.claims,
+      state.entities,
+      state.worldEdges,
+      state.unresolvedReferences,
+      state.assumptions,
+      state.beliefs,
+      state.beliefEdges,
+      state.reconstructions,
+      state.anomalies,
+      state.temporalConstraints,
+    ]);
+  const before = snapshot();
 
   const scope = options.evidenceScope ? new Set(options.evidenceScope) : null;
   const inScope = <T extends { sourceEvidenceId: string }>(record: T): boolean =>
@@ -2128,16 +2245,70 @@ export function runInferencePass(
     );
   }
 
-  const runStage = (name: string, stage: () => string | null): void => {
+  interface StageOutcome {
+    status: 'completed' | 'skipped';
+    detail: string;
+    inputIds?: string[];
+    outputIds?: string[];
+  }
+
+  const runStage = (agent: AgentName, stage: () => StageOutcome): void => {
+    const startedAt = performance.now();
     try {
-      const note = stage();
-      if (note) auditSteps.push(note);
+      const outcome = stage();
+      stageReports.push({
+        agent,
+        status: outcome.status,
+        detail: outcome.detail,
+        inputIds: outcome.inputIds ?? [],
+        outputIds: outcome.outputIds ?? [],
+        durationMs: Math.max(1, Math.round(performance.now() - startedAt)),
+      });
+      auditSteps.push(`${agent} · ${outcome.detail}`);
     } catch (error) {
-      auditSteps.push(
-        `${name} failed and was skipped: ${error instanceof Error ? error.message : String(error)}. The remaining stages still ran.`,
-      );
+      const detail = `failed and was skipped: ${error instanceof Error ? error.message : String(error)}. The remaining stages still ran.`;
+      stageReports.push({
+        agent,
+        status: 'failed',
+        detail,
+        inputIds: [],
+        outputIds: [],
+        durationMs: Math.max(1, Math.round(performance.now() - startedAt)),
+      });
+      auditSteps.push(`${agent} · ${detail}`);
     }
   };
+
+  let mentions: EntityMention[] = [];
+  runStage('INGESTOR', () => {
+    if (observations.length === 0 && claims.length === 0) {
+      return { status: 'skipped', detail: 'No observations or claims are in scope.' };
+    }
+    mentions = extractEntityMentions(observations, claims);
+    return {
+      status: 'completed',
+      detail: `Read ${mentions.length} surface mention${mentions.length === 1 ? '' : 's'} from ${observations.length} observation${observations.length === 1 ? '' : 's'} and ${claims.length} claim${claims.length === 1 ? '' : 's'}.`,
+      inputIds: [...observations.map((item) => item.id), ...claims.map((item) => item.id)],
+      outputIds: mentions.map((mention) => mention.sourceRecordId),
+    };
+  });
+
+  runStage('RESOLVER', () => {
+    if (mentions.length === 0) {
+      return { status: 'skipped', detail: 'No mentions were available to resolve.' };
+    }
+    const resolution = resolveEntities(mentions, state.entities, {
+      caseId: state.metadata.id,
+    });
+    state.entities = resolution.entities;
+    const added = mergeById(state.unresolvedReferences, resolution.references);
+    return {
+      status: 'completed',
+      detail: `Holds ${state.entities.length} entit${state.entities.length === 1 ? 'y' : 'ies'} and left ${added} new reference${added === 1 ? '' : 's'} unresolved rather than merging them.`,
+      inputIds: mentions.map((mention) => mention.id),
+      outputIds: state.entities.map((entity) => entity.id),
+    };
+  });
 
   runStage('CHRONOLOGIST', () => {
     let filled = 0;
@@ -2171,27 +2342,30 @@ export function runInferencePass(
         filled += 1;
       }
     }
-    return filled === 0
-      ? null
-      : `CHRONOLOGIST placed ${filled} record${filled === 1 ? '' : 's'} in time from timestamps the sources already carried.`;
-  });
-
-  let mentions: EntityMention[] = [];
-  runStage('INGESTOR', () => {
-    mentions = extractEntityMentions(observations, claims);
-    return `INGESTOR read ${mentions.length} surface mention${mentions.length === 1 ? '' : 's'} from ${observations.length} observation${observations.length === 1 ? '' : 's'} and ${claims.length} claim${claims.length === 1 ? '' : 's'}.`;
-  });
-
-  runStage('RESOLVER', () => {
-    const resolution = resolveEntities(mentions, state.entities, {
-      caseId: state.metadata.id,
-    });
-    state.entities = resolution.entities;
-    const added = mergeById(state.unresolvedReferences, resolution.references);
-    return `RESOLVER holds ${state.entities.length} entit${state.entities.length === 1 ? 'y' : 'ies'} and left ${added} new reference${added === 1 ? '' : 's'} unresolved rather than merging them.`;
+    const temporal = deriveTemporalConstraints(state);
+    state.temporalConstraints = temporal.constraints;
+    if (filled === 0 && temporal.constraints.length === 0) {
+      return {
+        status: 'skipped',
+        detail: 'No record in scope carries a time, so there is nothing to order.',
+      };
+    }
+    return {
+      status: 'completed',
+      detail: temporal.consistent
+        ? `Placed ${filled} record${filled === 1 ? '' : 's'} in time from timestamps their sources already carried and found ${temporal.constraints.length} interval constraint${temporal.constraints.length === 1 ? '' : 's'} consistent.`
+        : `Placed ${filled} record${filled === 1 ? '' : 's'} in time and found the interval network inconsistent: ${temporal.contradictions.slice(0, 3).join('; ')}.`,
+      outputIds: temporal.constraints.map((constraint) => constraint.id),
+    };
   });
 
   runStage('LINKER', () => {
+    if (state.entities.length === 0 || mentions.length === 0) {
+      return {
+        status: 'skipped',
+        detail: 'No resolved participants were available to relate.',
+      };
+    }
     const derived = deriveWorldEdges({
       caseId: state.metadata.id,
       observations,
@@ -2211,18 +2385,18 @@ export function runInferencePass(
         ...new Set([...existing.sourceEvidenceIds, ...assumption.sourceEvidenceIds]),
       ];
     }
-    return `LINKER derived ${addedEdges} new relationship${addedEdges === 1 ? '' : 's'}, each bound to its sources and to the assumption it required.`;
-  });
-
-  runStage('CHRONOLOGIST', () => {
-    const temporal = deriveTemporalConstraints(state);
-    state.temporalConstraints = temporal.constraints;
-    return temporal.consistent
-      ? `CHRONOLOGIST checked ${temporal.constraints.length} interval constraint${temporal.constraints.length === 1 ? '' : 's'} and found the network consistent.`
-      : `CHRONOLOGIST found the interval network inconsistent: ${temporal.contradictions.slice(0, 3).join('; ')}.`;
+    return {
+      status: 'completed',
+      detail: `Derived ${addedEdges} new relationship${addedEdges === 1 ? '' : 's'}, each bound to its sources and to the assumption it required.`,
+      inputIds: state.entities.map((entity) => entity.id),
+      outputIds: derived.edges.map((edge) => edge.id),
+    };
   });
 
   runStage('FALSIFIER', () => {
+    if (state.worldEdges.length === 0 && state.claims.length < 2) {
+      return { status: 'skipped', detail: 'The case holds nothing that could conflict.' };
+    }
     const contradictions = detectContradictions(state);
     const added = mergeById(state.beliefs, contradictions.beliefs);
     mergeById(state.assumptions, contradictions.assumptions);
@@ -2230,35 +2404,62 @@ export function runInferencePass(
       const edge = state.worldEdges.find((item) => item.id === edgeId);
       if (edge) edge.disputed = true;
     }
-    return `FALSIFIER found ${added} new contradiction${added === 1 ? '' : 's'} and marked ${contradictions.disputedEdgeIds.length} relationship${contradictions.disputedEdgeIds.length === 1 ? '' : 's'} disputed.`;
+    return {
+      status: 'completed',
+      detail: `Found ${added} new contradiction${added === 1 ? '' : 's'} and marked ${contradictions.disputedEdgeIds.length} relationship${contradictions.disputedEdgeIds.length === 1 ? '' : 's'} disputed.`,
+      inputIds: state.worldEdges.map((edge) => edge.id),
+      outputIds: contradictions.beliefs.map((belief) => belief.id),
+    };
   });
 
   runStage('HYPOTHESIS ENGINE', () => {
+    const explainable =
+      state.beliefs.some((belief) => belief.kind === 'contradiction') ||
+      state.unresolvedReferences.some(
+        (reference) =>
+          reference.status !== 'resolved' && reference.candidateBindings.length >= 2,
+      );
+    if (!explainable) {
+      return {
+        status: 'skipped',
+        detail:
+          'Nothing is in tension and no identity is open, so there is nothing to explain.',
+      };
+    }
     const abduction = abduceHypotheses(state);
     const added = mergeById(state.beliefs, abduction.beliefs);
     mergeById(state.beliefEdges, abduction.beliefEdges);
     const authored = state.reconstructions.filter(
       (item) => !item.id.startsWith(DERIVED_RECONSTRUCTION_PREFIX),
     );
-    if (authored.length > 0) {
-      // A case carrying authored accounts keeps them. The derivation layer adds
-      // structure; it does not quietly replace curated work.
-      return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and left ${authored.length} authored account${authored.length === 1 ? '' : 's'} untouched.`;
+    if (authored.length === 0) {
+      const rebuilt = buildReconstructions(state, { timestamp });
+      // `updatedAt` means "when this account last changed", so an account whose
+      // content is identical keeps its original stamp.
+      const withoutStamps = (items: Reconstruction[]): string =>
+        JSON.stringify(items.map(({ updatedAt: _ignored, ...rest }) => rest));
+      if (withoutStamps(rebuilt) !== withoutStamps(state.reconstructions)) {
+        state.reconstructions = rebuilt;
+      }
     }
-    const rebuilt = buildReconstructions(state, { timestamp });
-    // `updatedAt` means "when this account last changed", so an account whose
-    // content is identical keeps its original stamp. Restamping on every look
-    // would make re-derivation read as a case change forever.
-    const withoutStamps = (items: Reconstruction[]): string =>
-      JSON.stringify(items.map(({ updatedAt: _ignored, ...rest }) => rest));
-    if (withoutStamps(rebuilt) !== withoutStamps(state.reconstructions)) {
-      state.reconstructions = rebuilt;
-    }
-    return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and rebuilt ${state.reconstructions.length} account${state.reconstructions.length === 1 ? '' : 's'} without selecting one.`;
+    return {
+      status: 'completed',
+      detail:
+        authored.length > 0
+          ? `Offered ${added} competing explanation${added === 1 ? '' : 's'} and left ${authored.length} authored account${authored.length === 1 ? '' : 's'} untouched.`
+          : `Offered ${added} competing explanation${added === 1 ? '' : 's'} and rebuilt ${state.reconstructions.length} account${state.reconstructions.length === 1 ? '' : 's'} without selecting one.`,
+      outputIds: abduction.beliefs.map((belief) => belief.id),
+    };
   });
 
   runStage('INVESTIGATOR', () => {
     const ranked = rankOpenQuestions(state);
+    if (ranked.length === 0 && state.anomalies.length === 0) {
+      return {
+        status: 'skipped',
+        detail: 'The case raises no answerable question yet.',
+      };
+    }
     const rankedById = new Map(ranked.map((anomaly) => [anomaly.id, anomaly] as const));
     // An answered question keeps its answer, and a question the engine did not
     // derive is never dropped just because this pass did not re-derive it.
@@ -2274,28 +2475,27 @@ export function runInferencePass(
         second.expectedInformationGain - first.expectedInformationGain ||
         first.id.localeCompare(second.id),
     );
-    return `INVESTIGATOR ranked ${state.anomalies.length} open question${state.anomalies.length === 1 ? '' : 's'} by expected information gain (${added.length} newly derived).`;
+    return {
+      status: 'completed',
+      detail: `Ranked ${state.anomalies.length} open question${state.anomalies.length === 1 ? '' : 's'} by expected information gain (${added.length} newly derived).`,
+      outputIds: state.anomalies.map((anomaly) => anomaly.id),
+    };
   });
 
-  const after = JSON.stringify([
-    state.observations,
-    state.claims,
-    state.entities,
-    state.worldEdges,
-    state.unresolvedReferences,
-    state.assumptions,
-    state.beliefs,
-    state.beliefEdges,
-    state.reconstructions,
-    state.anomalies,
-    state.temporalConstraints,
-  ]);
+  const concerns = assessDerivation(state);
+  if (concerns.length > 0) {
+    auditSteps.push(
+      `CRITIC · ${concerns.length} weak point${concerns.length === 1 ? '' : 's'} in the derivation, led by: ${concerns[0]?.label ?? ''}.`,
+    );
+  }
 
-  if (before === after) {
+  if (before === snapshot()) {
     return {
       state,
       revision: null,
       auditSteps: [...auditSteps, 'No derivation changed the case; nothing was persisted.'],
+      stageReports,
+      concerns,
     };
   }
 
@@ -2319,18 +2519,18 @@ export function runInferencePass(
         direction: 'added',
       },
     ],
-    trace: auditSteps.slice(0, 6).map((step, index) => ({
+    trace: stageReports.slice(0, 6).map((report, index) => ({
       id: `REV-${String(sequence).padStart(3, '0')}-T${index + 1}`,
       kind: 'evidence' as const,
-      label: step,
-      relation: 'was recorded during the derivation pass',
+      label: `${report.agent} · ${report.detail}`,
+      relation: `was recorded as ${report.status} during the derivation pass`,
     })),
   };
   state.revisions.unshift(revision);
   state.metadata.revision = sequence;
   state.metadata.updatedAt = timestamp;
 
-  return { state, revision, auditSteps };
+  return { state, revision, auditSteps, stageReports, concerns };
 }
 
 const ISO_INSTANT =

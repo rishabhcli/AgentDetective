@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   abduceHypotheses,
+  assessDerivation,
   buildReconstructions,
   challengeAssumption,
   createEmptyCase,
@@ -1790,5 +1791,142 @@ describe('challengeAssumption', () => {
       timestamp: '2026-03-03T00:00:00.000Z',
     });
     expect(original).toEqual(snapshot);
+  });
+});
+
+describe('inference pass reporting', () => {
+  function textOnlyCase() {
+    const state = createEmptyCase({ id: 'case-report', title: 'Report' });
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Camera 4',
+        verbatim: 'Dana Reyes at Warehouse A.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+    return state;
+  }
+
+  it('reports one stage per agent in the order the chain runs', () => {
+    const result = runInferencePass(textOnlyCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(result.stageReports.map((report) => report.agent)).toEqual([
+      'INGESTOR',
+      'RESOLVER',
+      'CHRONOLOGIST',
+      'LINKER',
+      'FALSIFIER',
+      'HYPOTHESIS ENGINE',
+      'INVESTIGATOR',
+    ]);
+  });
+
+  it('marks a stage skipped, with its reason, when the case gives it nothing', () => {
+    // Nothing in this case carries a time, so the chronologist has no work.
+    const chronologist = runInferencePass(textOnlyCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }).stageReports.find((report) => report.agent === 'CHRONOLOGIST');
+
+    expect(chronologist?.status).toBe('skipped');
+    expect(chronologist?.detail.length).toBeGreaterThan(0);
+  });
+
+  it('reports a stage that did work as completed with the ids it produced', () => {
+    const resolver = runInferencePass(textOnlyCase(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }).stageReports.find((report) => report.agent === 'RESOLVER');
+
+    expect(resolver?.status).toBe('completed');
+    expect(resolver?.outputIds.length).toBeGreaterThan(0);
+  });
+
+  it('reports every stage on an empty case as skipped rather than completed', () => {
+    const reports = runInferencePass(createEmptyCase({ id: 'c', title: 'T' }), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }).stageReports;
+
+    expect(reports.every((report) => report.status === 'skipped')).toBe(true);
+  });
+});
+
+describe('assessDerivation', () => {
+  it('raises no concern about a case with nothing derived', () => {
+    expect(assessDerivation(createEmptyCase({ id: 'c', title: 'T' }))).toEqual([]);
+  });
+
+  it('names relationships that no second artifact corroborates', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    const concerns = assessDerivation(state);
+    expect(concerns.some((concern) => concern.kind === 'uncorroborated')).toBe(true);
+    expect(concerns[0]?.detail.length).toBeGreaterThan(0);
+  });
+
+  it('names an entity resting on a single mention', () => {
+    const state = createEmptyCase({ id: 'c', title: 'T' });
+    state.entities.push(
+      entity({
+        id: 'E-ONCE',
+        label: 'Seen Once',
+        confidence: 0.3,
+        sourceEvidenceIds: ['EV-1'],
+        properties: { mentionIds: ['MEN-1'] },
+      }),
+    );
+
+    expect(assessDerivation(state).some((item) => item.kind === 'thin-entity')).toBe(true);
+  });
+
+  it('names an open contradiction as something the case has not settled', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    expect(assessDerivation(state).some((item) => item.kind === 'open-contradiction')).toBe(
+      true,
+    );
+  });
+
+  it('orders concerns by how much of the case they put at risk', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    const exposure = assessDerivation(state).map((item) => item.exposure);
+    expect(exposure).toEqual([...exposure].sort((a, b) => b - a));
   });
 });
