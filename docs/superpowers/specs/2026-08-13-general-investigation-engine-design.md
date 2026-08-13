@@ -65,7 +65,7 @@ One rule is added by this design:
 
 A new pure module, `packages/domain/src/inference.ts`, sitting beside
 `reasoning.ts` (which mutates state) and `deduction.ts` (which only reads it).
-`inference.ts` is a *deriving* layer: state in, proposed additions out. It
+`inference.ts` is a _deriving_ layer: state in, proposed additions out. It
 never persists and never mutates its input.
 
 ```

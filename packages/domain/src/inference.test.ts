@@ -1,15 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  abduceHypotheses,
+  buildReconstructions,
   createEmptyCase,
+  deriveTemporalConstraints,
   deriveWorldEdges,
   detectContradictions,
   extractEntityMentions,
+  rankOpenQuestions,
   resolveEntities,
+  runInferencePass,
   type EntityMention,
 } from './inference.js';
 import type { Claim, Entity, Observation } from './types.js';
 
-function mention(partial: Partial<EntityMention> & { id: string; surfaceForm: string }): EntityMention {
+function mention(
+  partial: Partial<EntityMention> & { id: string; surfaceForm: string },
+): EntityMention {
   return {
     normalized: partial.surfaceForm.toLocaleLowerCase(),
     kindProbabilities: { person: 0.8, unknown: 0.2 },
@@ -40,7 +47,9 @@ function entity(partial: Partial<Entity> & { id: string; label: string }): Entit
   };
 }
 
-function observation(partial: Partial<Observation> & { id: string; text: string }): Observation {
+function observation(
+  partial: Partial<Observation> & { id: string; text: string },
+): Observation {
   return {
     caseId: 'case-test',
     sourceEvidenceId: 'EV-T1',
@@ -136,7 +145,9 @@ describe('extractEntityMentions', () => {
       [claim({ id: 'C-1', verbatim: 'The pallet came from Harbor Freight Ltd.' })],
     );
 
-    const org = mentions.find((mention) => mention.surfaceForm.startsWith('Harbor Freight'));
+    const org = mentions.find((mention) =>
+      mention.surfaceForm.startsWith('Harbor Freight'),
+    );
     expect(org?.kindProbabilities.organization).toBeGreaterThan(
       org?.kindProbabilities.person ?? 1,
     );
@@ -174,7 +185,9 @@ describe('extractEntityMentions', () => {
   });
 
   it('is deterministic: the same records produce the same mention IDs in the same order', () => {
-    const records = [claim({ id: 'C-1', verbatim: 'Marcus Webb met Dana Reyes at Pier 48.' })];
+    const records = [
+      claim({ id: 'C-1', verbatim: 'Marcus Webb met Dana Reyes at Pier 48.' }),
+    ];
 
     const first = extractEntityMentions([], records);
     const second = extractEntityMentions([], records);
@@ -190,7 +203,9 @@ describe('extractEntityMentions', () => {
 
     expect(mentions.length).toBeGreaterThan(0);
     for (const mention of mentions) {
-      expect(mention.sourceRecordId === 'O-9' || mention.sourceRecordId === 'C-9').toBe(true);
+      expect(mention.sourceRecordId === 'O-9' || mention.sourceRecordId === 'C-9').toBe(
+        true,
+      );
       expect(mention.locator.length).toBeGreaterThan(0);
       expect(mention.sourceEvidenceId).toBe('EV-T1');
     }
@@ -284,7 +299,8 @@ describe('resolveEntities', () => {
     );
 
     const reference = result.references.find((item) => item.surfaceForm === 'Dana');
-    const bound = reference?.candidateBindings.filter((item) => item.entityId !== null) ?? [];
+    const bound =
+      reference?.candidateBindings.filter((item) => item.entityId !== null) ?? [];
     expect(bound).toHaveLength(2);
     const total = reference?.candidateBindings.reduce(
       (sum, binding) => sum + binding.probability,
@@ -347,9 +363,24 @@ describe('resolveEntities', () => {
 });
 
 describe('deriveWorldEdges', () => {
-  const dana = entity({ id: 'E-DANA', label: 'Dana Reyes', kind: 'person', confidence: 0.8 });
-  const pier = entity({ id: 'E-PIER', label: 'Pier 48', kind: 'location', confidence: 0.8 });
-  const marcus = entity({ id: 'E-MARCUS', label: 'Marcus Webb', kind: 'person', confidence: 0.8 });
+  const dana = entity({
+    id: 'E-DANA',
+    label: 'Dana Reyes',
+    kind: 'person',
+    confidence: 0.8,
+  });
+  const pier = entity({
+    id: 'E-PIER',
+    label: 'Pier 48',
+    kind: 'location',
+    confidence: 0.8,
+  });
+  const marcus = entity({
+    id: 'E-MARCUS',
+    label: 'Marcus Webb',
+    kind: 'person',
+    confidence: 0.8,
+  });
 
   it('derives no relationship from a case with no mentions', () => {
     const result = deriveWorldEdges({
@@ -370,8 +401,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -389,14 +430,26 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
     const edge = result.edges[0];
     expect(edge?.assumptionIds.length).toBeGreaterThan(0);
-    const assumption = result.assumptions.find((item) => item.id === edge?.assumptionIds[0]);
+    const assumption = result.assumptions.find(
+      (item) => item.id === edge?.assumptionIds[0],
+    );
     expect(assumption).toBeDefined();
     expect(assumption?.status).toBe('valid');
     expect(assumption?.detail.length).toBeGreaterThan(0);
@@ -409,18 +462,45 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
     const attested = deriveWorldEdges({
       caseId: 'case-test',
       observations: [],
-      claims: [claim({ id: 'C-1', verbatim: 'Dana Reyes was at Pier 48.', sourceReliability: 'D', informationCredibility: 4 })],
+      claims: [
+        claim({
+          id: 'C-1',
+          verbatim: 'Dana Reyes was at Pier 48.',
+          sourceReliability: 'D',
+          informationCredibility: 4,
+        }),
+      ],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'C-1', recordType: 'claim' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'C-1', recordType: 'claim' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'C-1',
+          recordType: 'claim',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'C-1',
+          recordType: 'claim',
+        }),
       ],
     });
 
@@ -434,8 +514,18 @@ describe('deriveWorldEdges', () => {
       claims: [claim({ id: 'C-1', verbatim: 'Dana Reyes was at Pier 48.' })],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'C-1', recordType: 'claim' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'C-1', recordType: 'claim' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'C-1',
+          recordType: 'claim',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'C-1',
+          recordType: 'claim',
+        }),
       ],
     });
 
@@ -450,8 +540,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -465,8 +565,20 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'someone', vague: true, channel: 'vague', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'someone',
+          vague: true,
+          channel: 'vague',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -480,8 +592,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -495,16 +617,48 @@ describe('deriveWorldEdges', () => {
     const result = deriveWorldEdges({
       caseId: 'case-test',
       observations: [
-        observation({ id: 'O-1', text: 'Dana Reyes at Pier 48.', sourceEvidenceId: 'EV-A' }),
-        observation({ id: 'O-2', text: 'Dana Reyes at Pier 48.', sourceEvidenceId: 'EV-B' }),
+        observation({
+          id: 'O-1',
+          text: 'Dana Reyes at Pier 48.',
+          sourceEvidenceId: 'EV-A',
+        }),
+        observation({
+          id: 'O-2',
+          text: 'Dana Reyes at Pier 48.',
+          sourceEvidenceId: 'EV-B',
+        }),
       ],
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation', sourceEvidenceId: 'EV-A' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation', sourceEvidenceId: 'EV-A' }),
-        mention({ id: 'MEN-3', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-2', recordType: 'observation', sourceEvidenceId: 'EV-B' }),
-        mention({ id: 'MEN-4', surfaceForm: 'Pier 48', sourceRecordId: 'O-2', recordType: 'observation', sourceEvidenceId: 'EV-B' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+          sourceEvidenceId: 'EV-A',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+          sourceEvidenceId: 'EV-A',
+        }),
+        mention({
+          id: 'MEN-3',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-2',
+          recordType: 'observation',
+          sourceEvidenceId: 'EV-B',
+        }),
+        mention({
+          id: 'MEN-4',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-2',
+          recordType: 'observation',
+          sourceEvidenceId: 'EV-B',
+        }),
       ],
     });
 
@@ -521,8 +675,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -536,8 +700,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, marcus],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Marcus Webb', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Marcus Webb',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     });
 
@@ -551,8 +725,18 @@ describe('deriveWorldEdges', () => {
       claims: [],
       entities: [dana, pier],
       mentions: [
-        mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceRecordId: 'O-1', recordType: 'observation' }),
-        mention({ id: 'MEN-2', surfaceForm: 'Pier 48', sourceRecordId: 'O-1', recordType: 'observation' }),
+        mention({
+          id: 'MEN-1',
+          surfaceForm: 'Dana Reyes',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
+        mention({
+          id: 'MEN-2',
+          surfaceForm: 'Pier 48',
+          sourceRecordId: 'O-1',
+          recordType: 'observation',
+        }),
       ],
     };
     expect(deriveWorldEdges({ ...input, timestamp: '2026-01-01T00:00:00.000Z' })).toEqual(
@@ -593,7 +777,12 @@ function caseWithPlacements(
   );
   for (const placement of placements) {
     state.entities.push(
-      entity({ id: placement.place, label: placement.place, kind: 'location', confidence: 0.8 }),
+      entity({
+        id: placement.place,
+        label: placement.place,
+        kind: 'location',
+        confidence: 0.8,
+      }),
     );
     state.observations.push(
       observation({
@@ -644,8 +833,18 @@ describe('detectContradictions', () => {
 
   it('flags one person in two places at an overlapping time', () => {
     const state = caseWithPlacements([
-      { id: 'A', place: 'E-PIER', earliest: '2026-08-04T21:00:00.000Z', latest: '2026-08-04T21:10:00.000Z' },
-      { id: 'B', place: 'E-WAREHOUSE', earliest: '2026-08-04T21:05:00.000Z', latest: '2026-08-04T21:15:00.000Z' },
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
     ]);
 
     const result = detectContradictions(state);
@@ -657,8 +856,18 @@ describe('detectContradictions', () => {
 
   it('accepts one person in two places at clearly separate times', () => {
     const state = caseWithPlacements([
-      { id: 'A', place: 'E-PIER', earliest: '2026-08-04T20:00:00.000Z', latest: '2026-08-04T20:10:00.000Z' },
-      { id: 'B', place: 'E-WAREHOUSE', earliest: '2026-08-04T22:00:00.000Z', latest: '2026-08-04T22:10:00.000Z' },
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T20:00:00.000Z',
+        latest: '2026-08-04T20:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T22:00:00.000Z',
+        latest: '2026-08-04T22:10:00.000Z',
+      },
     ]);
 
     expect(detectContradictions(state).beliefs).toEqual([]);
@@ -666,8 +875,18 @@ describe('detectContradictions', () => {
 
   it('refuses to call it a contradiction when a placement has no time at all', () => {
     const state = caseWithPlacements([
-      { id: 'A', place: 'E-PIER', earliest: '2026-08-04T21:00:00.000Z', latest: '2026-08-04T21:10:00.000Z' },
-      { id: 'B', place: 'E-WAREHOUSE', earliest: '2026-08-04T21:05:00.000Z', latest: '2026-08-04T21:15:00.000Z' },
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
     ]);
     const target = state.worldEdges.find((edge) => edge.id === 'WE-B');
     if (target) target.validTime = null;
@@ -677,8 +896,18 @@ describe('detectContradictions', () => {
 
   it('carries the assumptions behind both sides into the contradiction environment', () => {
     const state = caseWithPlacements([
-      { id: 'A', place: 'E-PIER', earliest: '2026-08-04T21:00:00.000Z', latest: '2026-08-04T21:10:00.000Z' },
-      { id: 'B', place: 'E-WAREHOUSE', earliest: '2026-08-04T21:05:00.000Z', latest: '2026-08-04T21:15:00.000Z' },
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
     ]);
 
     const belief = detectContradictions(state).beliefs[0];
@@ -690,8 +919,18 @@ describe('detectContradictions', () => {
     const state = createEmptyCase({ id: 'case-test', title: 'T' });
     state.entities.push(entity({ id: 'E-DANA', label: 'Dana Reyes', kind: 'person' }));
     state.claims.push(
-      claim({ id: 'C-1', speaker: 'Marcus Webb', verbatim: 'Dana Reyes was at the gate.', sourceEvidenceId: 'EV-1' }),
-      claim({ id: 'C-2', speaker: 'Ruth Sandoval', verbatim: 'Dana Reyes was not at the gate.', sourceEvidenceId: 'EV-2' }),
+      claim({
+        id: 'C-1',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at the gate.',
+        sourceEvidenceId: 'EV-1',
+      }),
+      claim({
+        id: 'C-2',
+        speaker: 'Ruth Sandoval',
+        verbatim: 'Dana Reyes was not at the gate.',
+        sourceEvidenceId: 'EV-2',
+      }),
     );
 
     const result = detectContradictions(state);
@@ -703,8 +942,18 @@ describe('detectContradictions', () => {
     const state = createEmptyCase({ id: 'case-test', title: 'T' });
     state.entities.push(entity({ id: 'E-DANA', label: 'Dana Reyes', kind: 'person' }));
     state.claims.push(
-      claim({ id: 'C-1', speaker: 'Marcus Webb', verbatim: 'Dana Reyes was at the gate.', sourceEvidenceId: 'EV-1' }),
-      claim({ id: 'C-2', speaker: 'Marcus Webb', verbatim: 'Dana Reyes was at the gate.', sourceEvidenceId: 'EV-1' }),
+      claim({
+        id: 'C-1',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at the gate.',
+        sourceEvidenceId: 'EV-1',
+      }),
+      claim({
+        id: 'C-2',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at the gate.',
+        sourceEvidenceId: 'EV-1',
+      }),
     );
 
     expect(detectContradictions(state).beliefs).toEqual([]);
@@ -712,9 +961,526 @@ describe('detectContradictions', () => {
 
   it('is deterministic across repeated runs', () => {
     const state = caseWithPlacements([
-      { id: 'A', place: 'E-PIER', earliest: '2026-08-04T21:00:00.000Z', latest: '2026-08-04T21:10:00.000Z' },
-      { id: 'B', place: 'E-WAREHOUSE', earliest: '2026-08-04T21:05:00.000Z', latest: '2026-08-04T21:15:00.000Z' },
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
     ]);
     expect(detectContradictions(state)).toEqual(detectContradictions(state));
+  });
+});
+
+describe('abduceHypotheses', () => {
+  function contradictedCase() {
+    return caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+  }
+
+  it('proposes nothing to explain in a case with no tension and no open identity', () => {
+    const result = abduceHypotheses(createEmptyCase({ id: 'case-test', title: 'T' }));
+    expect(result.beliefs).toEqual([]);
+    expect(result.beliefEdges).toEqual([]);
+  });
+
+  it('offers competing explanations for a contradiction rather than picking one', () => {
+    const state = contradictedCase();
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    const result = abduceHypotheses(state);
+    const hypotheses = result.beliefs.filter(
+      (belief) => belief.kind === 'hypothesis' || belief.kind === 'alternative-explanation',
+    );
+    expect(hypotheses.length).toBeGreaterThanOrEqual(3);
+    // Competing explanations partition the probability mass; none is asserted.
+    const total = hypotheses.reduce((sum, belief) => sum + belief.confidence, 0);
+    expect(total).toBeCloseTo(1, 1);
+    expect(hypotheses.every((belief) => belief.status === 'open')).toBe(true);
+  });
+
+  it('links every explanation to the contradiction it would resolve', () => {
+    const state = contradictedCase();
+    const contradictions = detectContradictions(state).beliefs;
+    state.beliefs.push(...contradictions);
+
+    const result = abduceHypotheses(state);
+    const explains = result.beliefEdges.filter((edge) => edge.predicate === 'EXPLAINS');
+    expect(explains.length).toBeGreaterThan(0);
+    expect(explains.every((edge) => edge.targetId === contradictions[0]?.id)).toBe(true);
+  });
+
+  it('marks competing explanations as contradicting each other', () => {
+    const state = contradictedCase();
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    const result = abduceHypotheses(state);
+    expect(result.beliefEdges.some((edge) => edge.predicate === 'CONTRADICTS')).toBe(true);
+  });
+
+  it('offers one explanation per candidate binding of an open identity', () => {
+    const state = createEmptyCase({ id: 'case-test', title: 'T' });
+    state.entities.push(
+      entity({ id: 'E-DANA', label: 'Dana Reyes' }),
+      entity({ id: 'E-DEE', label: 'Dana Whitlock' }),
+    );
+    state.unresolvedReferences.push({
+      id: 'U-DANA',
+      caseId: 'case-test',
+      surfaceForm: 'Dana',
+      context: '',
+      kindProbabilities: { person: 1 },
+      candidateBindings: [
+        {
+          entityId: 'E-DANA',
+          label: 'Dana Reyes',
+          probability: 0.5,
+          prior: 0.5,
+          signalIds: [],
+        },
+        {
+          entityId: 'E-DEE',
+          label: 'Dana Whitlock',
+          probability: 0.3,
+          prior: 0.3,
+          signalIds: [],
+        },
+        {
+          entityId: null,
+          label: 'Someone else',
+          probability: 0.2,
+          prior: 0.2,
+          signalIds: [],
+        },
+      ],
+      resolutionSignals: [],
+      status: 'candidate',
+      resolvedBy: null,
+      sourceEvidenceIds: ['EV-1'],
+    });
+
+    const result = abduceHypotheses(state);
+    const identity = result.beliefs.filter((belief) => belief.sourceIds.includes('U-DANA'));
+    expect(identity.length).toBeGreaterThanOrEqual(2);
+    expect(identity.some((belief) => belief.label.includes('Dana Reyes'))).toBe(true);
+    expect(identity.some((belief) => belief.label.includes('Dana Whitlock'))).toBe(true);
+  });
+
+  it('is deterministic across repeated runs', () => {
+    const state = contradictedCase();
+    state.beliefs.push(...detectContradictions(state).beliefs);
+    expect(abduceHypotheses(state)).toEqual(abduceHypotheses(state));
+  });
+});
+
+describe('rankOpenQuestions', () => {
+  it('asks nothing about an empty case', () => {
+    expect(rankOpenQuestions(createEmptyCase({ id: 'case-test', title: 'T' }))).toEqual([]);
+  });
+
+  it('asks who an unresolved reference is', () => {
+    const state = createEmptyCase({ id: 'case-test', title: 'T' });
+    state.unresolvedReferences.push({
+      id: 'U-J',
+      caseId: 'case-test',
+      surfaceForm: 'J',
+      context: '',
+      kindProbabilities: { person: 1 },
+      candidateBindings: [
+        { entityId: 'E-A', label: 'Alice', probability: 0.5, prior: 0.5, signalIds: [] },
+        { entityId: 'E-B', label: 'Bob', probability: 0.5, prior: 0.5, signalIds: [] },
+      ],
+      resolutionSignals: [],
+      status: 'candidate',
+      resolvedBy: null,
+      sourceEvidenceIds: ['EV-1'],
+    });
+
+    const questions = rankOpenQuestions(state);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.category).toBe('who');
+    expect(questions[0]?.relatedIds).toContain('U-J');
+    expect(questions[0]?.status).toBe('open');
+    expect(questions[0]?.expectedInformationGain).toBeGreaterThan(0);
+  });
+
+  it('ranks an evenly split identity above a nearly settled one', () => {
+    function stateWith(probabilities: [number, number]) {
+      const state = createEmptyCase({ id: 'case-test', title: 'T' });
+      state.unresolvedReferences.push({
+        id: 'U-X',
+        caseId: 'case-test',
+        surfaceForm: 'X',
+        context: '',
+        kindProbabilities: { person: 1 },
+        candidateBindings: [
+          {
+            entityId: 'E-A',
+            label: 'Alice',
+            probability: probabilities[0],
+            prior: probabilities[0],
+            signalIds: [],
+          },
+          {
+            entityId: 'E-B',
+            label: 'Bob',
+            probability: probabilities[1],
+            prior: probabilities[1],
+            signalIds: [],
+          },
+        ],
+        resolutionSignals: [],
+        status: 'candidate',
+        resolvedBy: null,
+        sourceEvidenceIds: ['EV-1'],
+      });
+      return state;
+    }
+
+    const split = rankOpenQuestions(stateWith([0.5, 0.5]))[0];
+    const settled = rankOpenQuestions(stateWith([0.95, 0.05]))[0];
+    expect(split?.expectedInformationGain).toBeGreaterThan(
+      settled?.expectedInformationGain ?? 1,
+    );
+  });
+
+  it('asks which side of a contradiction is wrong', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    const questions = rankOpenQuestions(state);
+    expect(questions.some((item) => item.relatedIds.includes('WE-A'))).toBe(true);
+  });
+
+  it('asks for corroboration of a relationship resting on a single artifact', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    const questions = rankOpenQuestions(state);
+    expect(
+      questions.some((item) => item.detail.toLowerCase().includes('one artifact')),
+    ).toBe(true);
+  });
+
+  it('returns questions ordered by expected information gain', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+    state.beliefs.push(...detectContradictions(state).beliefs);
+
+    const gains = rankOpenQuestions(state).map((item) => item.expectedInformationGain);
+    expect(gains).toEqual([...gains].sort((a, b) => b - a));
+  });
+});
+
+describe('deriveTemporalConstraints', () => {
+  it('derives nothing without timed records', () => {
+    expect(
+      deriveTemporalConstraints(createEmptyCase({ id: 'c', title: 'T' })).constraints,
+    ).toEqual([]);
+  });
+
+  it('relates two timed observations and reports the network consistent', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T20:00:00.000Z',
+        latest: '2026-08-04T20:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    const result = deriveTemporalConstraints(state);
+    expect(result.constraints).toHaveLength(1);
+    expect(result.constraints[0]?.possibleRelations).toContain('before');
+    expect(result.consistent).toBe(true);
+    expect(result.constraints[0]?.sourceIds.length).toBeGreaterThan(0);
+  });
+});
+
+describe('buildReconstructions', () => {
+  it('reconstructs nothing from an empty case', () => {
+    expect(buildReconstructions(createEmptyCase({ id: 'c', title: 'T' }))).toEqual([]);
+  });
+
+  it('produces one account when nothing is in tension', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    const reconstructions = buildReconstructions(state);
+    expect(reconstructions).toHaveLength(1);
+    expect(reconstructions[0]?.isLeading).toBe(true);
+    expect(reconstructions[0]?.statements.length).toBeGreaterThan(0);
+    expect(reconstructions[0]?.coveragePercent).toBeGreaterThanOrEqual(0);
+    expect(reconstructions[0]?.coveragePercent).toBeLessThanOrEqual(100);
+  });
+
+  it('produces competing accounts when a contradiction is open', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+      {
+        id: 'B',
+        place: 'E-WAREHOUSE',
+        earliest: '2026-08-04T21:05:00.000Z',
+        latest: '2026-08-04T21:15:00.000Z',
+      },
+    ]);
+    state.beliefs.push(...detectContradictions(state).beliefs);
+    state.beliefs.push(...abduceHypotheses(state).beliefs);
+
+    const reconstructions = buildReconstructions(state);
+    expect(reconstructions.length).toBeGreaterThanOrEqual(2);
+    expect(reconstructions.filter((item) => item.isLeading)).toHaveLength(1);
+    expect(reconstructions.map((item) => item.rank)).toEqual(
+      reconstructions.map((_, index) => index + 1),
+    );
+  });
+
+  it('never calls a statement SUPPORTED on the strength of a single artifact', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    const statements = buildReconstructions(state).flatMap((item) => item.statements);
+    expect(statements.length).toBeGreaterThan(0);
+    expect(statements.every((statement) => statement.status !== 'SUPPORTED')).toBe(true);
+  });
+
+  it('labels every statement with a support status and its sources', () => {
+    const state = caseWithPlacements([
+      {
+        id: 'A',
+        place: 'E-PIER',
+        earliest: '2026-08-04T21:00:00.000Z',
+        latest: '2026-08-04T21:10:00.000Z',
+      },
+    ]);
+
+    for (const statement of buildReconstructions(state).flatMap(
+      (item) => item.statements,
+    )) {
+      expect([
+        'SUPPORTED',
+        'PARTIALLY_SUPPORTED',
+        'INFERRED',
+        'DISPUTED',
+        'UNKNOWN',
+      ]).toContain(statement.status);
+      expect(statement.sourceIds.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('runInferencePass', () => {
+  function caseWithRawRecords() {
+    const state = createEmptyCase({ id: 'case-test', title: 'Warehouse' });
+    state.evidence.push({
+      id: 'EV-1',
+      caseId: 'case-test',
+      title: 'Gate log',
+      kind: 'access-log',
+      fileName: 'gate.txt',
+      mimeType: 'text/plain',
+      sha256: 'a'.repeat(64),
+      ingestedAt: '2026-08-04T00:00:00.000Z',
+      capturedAt: null,
+      sourceLabel: 'Gate system',
+      chainOfCustody: 'test',
+      content: 'Dana Reyes at Pier 48.',
+      rawLocator: null,
+      extractionStatus: 'bounded-local',
+      extractor: 'local-deterministic',
+      observationIds: ['O-1'],
+      claimIds: [],
+      synthetic: false,
+      challengedByEvidenceIds: [],
+    });
+    state.observations.push(
+      observation({ id: 'O-1', text: 'Dana Reyes at Pier 48.', sourceEvidenceId: 'EV-1' }),
+    );
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at Pier 48 that night.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+    return state;
+  }
+
+  it('changes nothing in an empty case', () => {
+    const result = runInferencePass(createEmptyCase({ id: 'c', title: 'T' }), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    expect(result.revision).toBeNull();
+    expect(result.state.entities).toEqual([]);
+  });
+
+  it('builds a graph from raw records that had none', () => {
+    const result = runInferencePass(caseWithRawRecords(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(result.revision).not.toBeNull();
+    expect(result.state.entities.length).toBeGreaterThan(0);
+    expect(result.state.worldEdges.length).toBeGreaterThan(0);
+    expect(result.state.entities.some((item) => item.label === 'Dana Reyes')).toBe(true);
+    expect(result.state.entities.some((item) => item.label === 'Pier 48')).toBe(true);
+  });
+
+  it('is idempotent: a second pass over the same records changes nothing', () => {
+    const first = runInferencePass(caseWithRawRecords(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const second = runInferencePass(first.state, { timestamp: '2026-01-01T00:00:00.000Z' });
+
+    expect(second.revision).toBeNull();
+    expect(second.state.entities).toEqual(first.state.entities);
+    expect(second.state.worldEdges).toEqual(first.state.worldEdges);
+  });
+
+  it('never leaves a derived relationship without a stated assumption', () => {
+    const result = runInferencePass(caseWithRawRecords(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    for (const edge of result.state.worldEdges) {
+      expect(edge.assumptionIds.length).toBeGreaterThan(0);
+      for (const assumptionId of edge.assumptionIds) {
+        expect(result.state.assumptions.some((item) => item.id === assumptionId)).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it('records what each stage did in the audit trail', () => {
+    const result = runInferencePass(caseWithRawRecords(), {
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(result.auditSteps.length).toBeGreaterThan(0);
+    expect(result.auditSteps.join(' ')).toMatch(/RESOLVER/);
+    expect(result.auditSteps.join(' ')).toMatch(/LINKER/);
+  });
+
+  it('does not mutate the state it was given', () => {
+    const original = caseWithRawRecords();
+    const snapshot = structuredClone(original);
+    runInferencePass(original, { timestamp: '2026-01-01T00:00:00.000Z' });
+    expect(original).toEqual(snapshot);
+  });
+
+  it('stays within its budget on a large corpus and says which bound it took', () => {
+    const state = createEmptyCase({ id: 'case-big', title: 'Big' });
+    for (let index = 0; index < 400; index += 1) {
+      state.observations.push(
+        observation({
+          id: `O-${index}`,
+          text: `Subject ${index} met Marcus Webb at Pier 48.`,
+          sourceEvidenceId: `EV-${index % 7}`,
+        }),
+      );
+    }
+
+    const result = runInferencePass(state, {
+      timestamp: '2026-01-01T00:00:00.000Z',
+      maxRecords: 50,
+    });
+
+    expect(result.auditSteps.join(' ')).toMatch(/50 of 400/);
+    expect(result.state.entities.length).toBeGreaterThan(0);
+  });
+
+  it('promotes no world fact from a claim without recording the testimony leap', () => {
+    const state = createEmptyCase({ id: 'case-test', title: 'T' });
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at Pier 48.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    );
+
+    const result = runInferencePass(state, { timestamp: '2026-01-01T00:00:00.000Z' });
+    const claimEdges = result.state.worldEdges.filter(
+      (edge) => edge.sourceClaimIds.length > 0,
+    );
+    expect(claimEdges.length).toBeGreaterThan(0);
+    expect(
+      claimEdges.every((edge) => edge.assumptionIds.includes('A-LEAP-TESTIMONY')),
+    ).toBe(true);
   });
 });

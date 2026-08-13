@@ -296,7 +296,11 @@ export function AgentWorkspace({
           </button>
         </div>
         <p className={scope === 'connected' ? 'is-connected' : undefined}>
-          {scope === 'connected' ? <Globe2 size={14} aria-hidden="true" /> : <FileSearch size={14} aria-hidden="true" />}
+          {scope === 'connected' ? (
+            <Globe2 size={14} aria-hidden="true" />
+          ) : (
+            <FileSearch size={14} aria-hidden="true" />
+          )}
           {scope === 'connected'
             ? 'Searches the connected surfaces you allowed and records every source it checked.'
             : 'Searches the case file and records every source it checked.'}

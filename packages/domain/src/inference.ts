@@ -1,15 +1,31 @@
-import { admiraltyStrength, allenRelation } from './reasoning.js';
+import {
+  admiraltyStrength,
+  allenRelation,
+  computeWeightedCoverage,
+  enforceTemporalPathConsistency,
+  rankQuestionsByInformationGain,
+  type CandidateQuestion,
+  type CoveragePoint,
+} from './reasoning.js';
 import type {
+  Anomaly,
   Assumption,
   Belief,
+  BeliefEdge,
+  CaseRevision,
   CaseState,
   Claim,
   EdgeContribution,
   Entity,
   EntityKind,
   LensId,
+  MutationResult,
   Observation,
+  Reconstruction,
+  ReconstructionStatement,
   ResolutionSignal,
+  StatementStatus,
+  TemporalConstraint,
   UnresolvedReference,
   WorldEdge,
   WorldPredicate,
@@ -29,12 +45,7 @@ import type {
  * than producing nothing.
  */
 
-export type MentionChannel =
-  | 'speaker'
-  | 'lexical'
-  | 'identifier'
-  | 'locative'
-  | 'vague';
+export type MentionChannel = 'speaker' | 'lexical' | 'identifier' | 'locative' | 'vague';
 
 /**
  * A thing a record *said*, before anything decides whether it names a
@@ -141,7 +152,17 @@ const LEXICAL_STOPWORDS = new Set([
 ]);
 
 /** Tokens that may sit inside a name run without breaking it. */
-const RUN_CONNECTORS = new Set(['of', 'the', 'and', 'de', 'da', 'van', 'von', 'der', 'del']);
+const RUN_CONNECTORS = new Set([
+  'of',
+  'the',
+  'and',
+  'de',
+  'da',
+  'van',
+  'von',
+  'der',
+  'del',
+]);
 
 const ORGANIZATION_SUFFIXES = new Set([
   'ltd',
@@ -265,7 +286,8 @@ const URL_PATTERN = /https?:\/\/[^\s<>"']+/gu;
 const PHONE_PATTERN = /\+?\d[\d\s().-]{7,16}\d/gu;
 const HANDLE_PATTERN = /(?<![\p{L}\p{N}])@[\p{L}\p{N}_]{2,30}/gu;
 /** Mixed letters and digits, all caps, of plate/badge/serial length. */
-const CODE_PATTERN = /(?<![\p{L}\p{N}-])(?=[A-Z0-9]{5,10}(?![\p{L}\p{N}]))(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{5,10}/gu;
+const CODE_PATTERN =
+  /(?<![\p{L}\p{N}-])(?=[A-Z0-9]{5,10}(?![\p{L}\p{N}]))(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{5,10}/gu;
 
 function identifierDrafts(text: string): MentionDraft[] {
   const drafts: MentionDraft[] = [];
@@ -275,7 +297,14 @@ function identifierDrafts(text: string): MentionDraft[] {
     kindWeights: Record<string, number>,
     confidence: number,
   ) => {
-    drafts.push({ surfaceForm, start, channel: 'identifier', kindWeights, confidence, vague: false });
+    drafts.push({
+      surfaceForm,
+      start,
+      channel: 'identifier',
+      kindWeights,
+      confidence,
+      vague: false,
+    });
   };
 
   for (const match of text.matchAll(EMAIL_PATTERN)) {
@@ -1241,9 +1270,7 @@ function contentTokens(text: string): Set<string> {
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
   return new Set(
-    tokens.filter(
-      (token) => !CONTENT_STOPWORDS.has(token) && !NEGATION_MARKERS.has(token),
-    ),
+    tokens.filter((token) => !CONTENT_STOPWORDS.has(token) && !NEGATION_MARKERS.has(token)),
   );
 }
 
@@ -1377,4 +1404,773 @@ export function detectContradictions(state: CaseState): ContradictionResult {
     beliefs: beliefs.sort((first, second) => first.id.localeCompare(second.id)),
     disputedEdgeIds: [...disputed].sort((first, second) => first.localeCompare(second)),
   };
+}
+
+export interface AbductionResult {
+  beliefs: Belief[];
+  beliefEdges: BeliefEdge[];
+}
+
+/**
+ * The explanations that would resolve a conflict, offered together.
+ *
+ * Abduction here is deliberately narrow. A contradiction is a surprising fact
+ * that demands an explanation, and the explanations worth naming are the ones
+ * that would actually dissolve it: one side is wrong, the two descriptions are
+ * of one thing, or two things are being read as one. The engine proposes the
+ * set and refuses to pick a winner.
+ */
+export function abduceHypotheses(state: CaseState): AbductionResult {
+  const beliefs: Belief[] = [];
+  const beliefEdges: BeliefEdge[] = [];
+  const edgeById = new Map(state.worldEdges.map((edge) => [edge.id, edge]));
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  const contradictions = state.beliefs.filter((belief) => belief.kind === 'contradiction');
+
+  for (const contradiction of contradictions) {
+    const edges = contradiction.sourceIds
+      .map((id) => edgeById.get(id))
+      .filter((edge): edge is NonNullable<typeof edge> => edge !== undefined);
+
+    let explanations: Array<{ label: string; detail: string }>;
+    if (edges.length >= 2) {
+      const [first, second] = edges;
+      if (!first || !second) continue;
+      explanations = [
+        {
+          label: `The ${labelOf(first.objectId)} placement is mistaken`,
+          detail: `${first.id} would fail if its source artifact was misread, mistimed, or describes a different subject.`,
+        },
+        {
+          label: `The ${labelOf(second.objectId)} placement is mistaken`,
+          detail: `${second.id} would fail on the same grounds, leaving the other placement standing.`,
+        },
+        {
+          label: `${labelOf(first.objectId)} and ${labelOf(second.objectId)} are one place under two names`,
+          detail:
+            'Both placements can be accurate if the two location records describe the same physical place. Resolving them would remove the conflict without discarding either artifact.',
+        },
+        {
+          label: `Two different subjects are being read as ${labelOf(first.subjectId)}`,
+          detail:
+            'Both placements can be accurate if the identity behind them was merged too early. This is the failure the candidate-binding model exists to catch.',
+        },
+      ];
+    } else {
+      explanations = [
+        {
+          label: 'The first account is accurate and the second is not',
+          detail:
+            'The denial fails if its speaker was mistaken, repeating hearsay, or has a reason to deny.',
+        },
+        {
+          label: 'The second account is accurate and the first is not',
+          detail: 'The original assertion fails on the same grounds.',
+        },
+        {
+          label: 'The two accounts describe different moments or different things',
+          detail:
+            'Both can be accurate if they are not actually about the same event; the conflict would be an artifact of reading them as one.',
+        },
+      ];
+    }
+
+    const share = round(1 / explanations.length, 3);
+    const created = explanations.map((explanation, index) => {
+      const belief: Belief = {
+        id: `B-HYP-${contradiction.id}-${index + 1}`,
+        caseId: state.metadata.id,
+        kind: 'hypothesis',
+        label: explanation.label,
+        detail: explanation.detail,
+        status: 'open',
+        confidence: share,
+        sourceIds: [contradiction.id, ...contradiction.sourceIds],
+        environments: structuredClone(contradiction.environments),
+        survivingEnvironments: structuredClone(contradiction.survivingEnvironments),
+      };
+      return belief;
+    });
+    beliefs.push(...created);
+
+    for (const belief of created) {
+      beliefEdges.push({
+        id: `BE-EXPLAINS-${belief.id}`,
+        caseId: state.metadata.id,
+        sourceId: belief.id,
+        targetId: contradiction.id,
+        predicate: 'EXPLAINS',
+        weight: belief.confidence,
+        sourceEvidenceIds: [],
+      });
+    }
+    // Competing explanations exclude one another; that is what makes the set a
+    // question rather than a list.
+    for (let left = 0; left < created.length; left += 1) {
+      for (let right = left + 1; right < created.length; right += 1) {
+        const a = created[left];
+        const b = created[right];
+        if (!a || !b) continue;
+        beliefEdges.push({
+          id: `BE-CONTRADICTS-${a.id}-${b.id}`,
+          caseId: state.metadata.id,
+          sourceId: a.id,
+          targetId: b.id,
+          predicate: 'CONTRADICTS',
+          weight: round(Math.min(a.confidence, b.confidence), 3),
+          sourceEvidenceIds: [],
+        });
+      }
+    }
+  }
+
+  for (const reference of state.unresolvedReferences) {
+    if (reference.status === 'resolved') continue;
+    if (reference.candidateBindings.length < 2) continue;
+    reference.candidateBindings.forEach((binding, index) => {
+      beliefs.push({
+        id: `B-HYP-${reference.id}-${index + 1}`,
+        caseId: state.metadata.id,
+        kind: 'hypothesis',
+        label: `“${reference.surfaceForm}” is ${binding.label}`,
+        detail: binding.entityId
+          ? `Binding “${reference.surfaceForm}” to ${binding.label} carries ${Math.round(binding.probability * 100)}% of the current distribution. The alternatives are retained.`
+          : `The case has not met whoever “${reference.surfaceForm}” names. This possibility is kept so the distribution stays open.`,
+        status: 'open',
+        confidence: binding.probability,
+        sourceIds: [reference.id, ...reference.sourceEvidenceIds],
+        environments: [[]],
+        survivingEnvironments: [[]],
+      });
+    });
+  }
+
+  return {
+    beliefs: beliefs.sort((first, second) => first.id.localeCompare(second.id)),
+    beliefEdges: beliefEdges.sort((first, second) => first.id.localeCompare(second.id)),
+  };
+}
+
+function dominantKind(distribution: Record<string, number>): string {
+  let best = 'unknown';
+  let bestScore = -1;
+  for (const [kind, probability] of Object.entries(distribution)) {
+    if (probability > bestScore) {
+      best = kind;
+      bestScore = probability;
+    }
+  }
+  return best;
+}
+
+function categoryForKind(kind: string): Anomaly['category'] {
+  if (kind === 'person' || kind === 'identity' || kind === 'organization') return 'who';
+  if (kind === 'location') return 'where';
+  if (kind === 'time-interval' || kind === 'event') return 'when';
+  return 'what';
+}
+
+/** Expected information gain of a question whose answer settles it outright. */
+function resolvingGain(id: string, question: string, prior: number[]): number {
+  const candidate: CandidateQuestion = {
+    id,
+    question,
+    answers: prior.map((probability, index) => ({
+      label: `answer ${index + 1}`,
+      probability,
+      posteriorHypothesisProbabilities: prior.map((_, other) => (other === index ? 1 : 0)),
+    })),
+  };
+  return (
+    rankQuestionsByInformationGain(prior, [candidate])[0]?.expectedInformationGain ?? 0
+  );
+}
+
+/**
+ * The open questions, ordered by how much of the case's uncertainty an answer
+ * would actually remove. This is the difference between a list of things that
+ * are unknown and a plan.
+ */
+export function rankOpenQuestions(state: CaseState): Anomaly[] {
+  const anomalies: Anomaly[] = [];
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  for (const reference of state.unresolvedReferences) {
+    if (reference.status === 'resolved') continue;
+    if (reference.candidateBindings.length < 2) continue;
+    const prior = reference.candidateBindings.map((binding) => binding.probability);
+    const category = categoryForKind(dominantKind(reference.kindProbabilities));
+    const question = `${category === 'who' ? 'Who' : category === 'where' ? 'Where' : category === 'when' ? 'When' : 'What'} is “${reference.surfaceForm}”?`;
+    anomalies.push({
+      id: `AN-${reference.id}`,
+      caseId: state.metadata.id,
+      question,
+      category,
+      detail: `${reference.candidateBindings.length} candidate bindings remain open and nothing has separated them. Everything derived from “${reference.surfaceForm}” inherits that spread.`,
+      expectedInformationGain: resolvingGain(`Q-${reference.id}`, question, prior),
+      status: 'open',
+      relatedIds: [reference.id, ...reference.sourceEvidenceIds],
+      lastResult: null,
+    });
+  }
+
+  const edgeById = new Map(state.worldEdges.map((edge) => [edge.id, edge]));
+  for (const contradiction of state.beliefs) {
+    if (contradiction.kind !== 'contradiction') continue;
+    const edges = contradiction.sourceIds
+      .map((id) => edgeById.get(id))
+      .filter((edge): edge is NonNullable<typeof edge> => edge !== undefined);
+    const branches = edges.length >= 2 ? 4 : 3;
+    const question =
+      edges.length >= 2
+        ? `Which placement of ${labelOf(edges[0]?.subjectId ?? '')} is wrong?`
+        : 'Which of the two conflicting accounts is accurate?';
+    anomalies.push({
+      id: `AN-${contradiction.id}`,
+      caseId: state.metadata.id,
+      question,
+      category: edges.length >= 2 ? 'where' : 'what',
+      detail: contradiction.detail,
+      expectedInformationGain: resolvingGain(
+        `Q-${contradiction.id}`,
+        question,
+        Array.from({ length: branches }, () => 1 / branches),
+      ),
+      status: 'open',
+      relatedIds: [contradiction.id, ...contradiction.sourceIds],
+      lastResult: null,
+    });
+  }
+
+  for (const edge of state.worldEdges) {
+    const artifacts = new Set(
+      [
+        ...edge.sourceObservationIds.map(
+          (id) => state.observations.find((item) => item.id === id)?.sourceEvidenceId,
+        ),
+        ...edge.sourceClaimIds.map(
+          (id) => state.claims.find((item) => item.id === id)?.sourceEvidenceId,
+        ),
+      ].filter((id): id is string => Boolean(id)),
+    );
+    if (artifacts.size !== 1) continue;
+    const question = `Can ${labelOf(edge.subjectId)} → ${labelOf(edge.objectId)} be corroborated independently?`;
+    anomalies.push({
+      id: `AN-CORROB-${edge.id}`,
+      caseId: state.metadata.id,
+      question,
+      category: 'what',
+      detail: `This relationship rests on one artifact. A second independent source would either confirm it or expose it, and nothing else in the case can do that job.`,
+      expectedInformationGain: resolvingGain(`Q-CORROB-${edge.id}`, question, [
+        Math.max(0.01, edge.confidence),
+        Math.max(0.01, 1 - edge.confidence),
+      ]),
+      status: 'open',
+      relatedIds: [edge.id, ...[...artifacts]],
+      lastResult: null,
+    });
+  }
+
+  return anomalies.sort(
+    (first, second) =>
+      second.expectedInformationGain - first.expectedInformationGain ||
+      first.id.localeCompare(second.id),
+  );
+}
+
+export interface TemporalDerivationResult {
+  constraints: TemporalConstraint[];
+  consistent: boolean;
+  contradictions: string[];
+}
+
+/**
+ * Allen constraints between timed observations, narrowed by path consistency.
+ *
+ * Observations are used as the event nodes because they are the closest thing
+ * the record has to something that happened at a time. An inconsistent network
+ * is reported, never quietly repaired.
+ */
+export function deriveTemporalConstraints(
+  state: CaseState,
+  options: { maxPairs?: number } = {},
+): TemporalDerivationResult {
+  const maxPairs = options.maxPairs ?? 2_000;
+  const timed = state.observations.filter(
+    (observation) =>
+      observation.interval !== null && observation.interval.precision !== 'unknown',
+  );
+  const constraints: TemporalConstraint[] = [];
+
+  outer: for (let left = 0; left < timed.length; left += 1) {
+    for (let right = left + 1; right < timed.length; right += 1) {
+      if (constraints.length >= maxPairs) break outer;
+      const a = timed[left];
+      const b = timed[right];
+      if (!a?.interval || !b?.interval) continue;
+      let relation;
+      try {
+        relation = allenRelation(a.interval, b.interval);
+      } catch {
+        continue;
+      }
+      constraints.push({
+        id: `TC-${a.id}-${b.id}`,
+        caseId: state.metadata.id,
+        sourceEventId: a.id,
+        targetEventId: b.id,
+        possibleRelations: [relation],
+        sourceIds: [a.id, b.id, a.sourceEvidenceId, b.sourceEvidenceId],
+        status: 'consistent',
+      });
+    }
+  }
+
+  if (constraints.length === 0) {
+    return { constraints: [], consistent: true, contradictions: [] };
+  }
+
+  const result = enforceTemporalPathConsistency(constraints);
+  return {
+    constraints: result.constraints,
+    consistent: result.consistent,
+    contradictions: result.contradictions,
+  };
+}
+
+function readablePredicate(predicate: WorldPredicate): string {
+  return predicate.replaceAll('_', ' ').toLocaleLowerCase();
+}
+
+function intervalLabel(edge: WorldEdge): string {
+  if (!edge.validTime) return 'Time not established';
+  if (edge.validTime.earliest === edge.validTime.latest) return edge.validTime.earliest;
+  return `${edge.validTime.earliest} – ${edge.validTime.latest}`;
+}
+
+function artifactsBehind(state: CaseState, edge: WorldEdge): Set<string> {
+  return new Set(
+    [
+      ...edge.sourceObservationIds.map(
+        (id) => state.observations.find((item) => item.id === id)?.sourceEvidenceId,
+      ),
+      ...edge.sourceClaimIds.map(
+        (id) => state.claims.find((item) => item.id === id)?.sourceEvidenceId,
+      ),
+    ].filter((id): id is string => Boolean(id)),
+  );
+}
+
+function statementStatus(
+  state: CaseState,
+  edge: WorldEdge,
+  excluded: boolean,
+  openReferenceEntityIds: ReadonlySet<string>,
+): StatementStatus {
+  if (excluded || edge.disputed) return 'DISPUTED';
+  if (
+    openReferenceEntityIds.has(edge.subjectId) ||
+    openReferenceEntityIds.has(edge.objectId)
+  ) {
+    return 'UNKNOWN';
+  }
+  if (edge.sourceObservationIds.length === 0) return 'INFERRED';
+  return artifactsBehind(state, edge).size >= 2 ? 'SUPPORTED' : 'PARTIALLY_SUPPORTED';
+}
+
+interface ReconstructionBranch {
+  key: string;
+  title: string;
+  eyebrow: string;
+  summary: string;
+  excludedEdgeIds: Set<string>;
+  hypothesisIds: string[];
+}
+
+function reconstructionBranches(state: CaseState): ReconstructionBranch[] {
+  const edgeById = new Map(state.worldEdges.map((edge) => [edge.id, edge]));
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  const contradiction = state.beliefs.find((belief) => {
+    if (belief.kind !== 'contradiction') return false;
+    return belief.sourceIds.filter((id) => edgeById.has(id)).length >= 2;
+  });
+
+  if (!contradiction) {
+    return [
+      {
+        key: 'AS-RECORDED',
+        title: 'As recorded',
+        eyebrow: 'Single surviving account',
+        summary:
+          'Nothing in the case is currently in tension, so one account covers every derived relationship.',
+        excludedEdgeIds: new Set<string>(),
+        hypothesisIds: [],
+      },
+    ];
+  }
+
+  const conflicting = contradiction.sourceIds
+    .map((id) => edgeById.get(id))
+    .filter((edge): edge is WorldEdge => edge !== undefined)
+    .slice(0, 2);
+  const [first, second] = conflicting;
+  if (!first || !second) {
+    return [
+      {
+        key: 'AS-RECORDED',
+        title: 'As recorded',
+        eyebrow: 'Single surviving account',
+        summary: 'One account covers every derived relationship.',
+        excludedEdgeIds: new Set<string>(),
+        hypothesisIds: [],
+      },
+    ];
+  }
+
+  return [
+    {
+      key: `WITHOUT-${first.id}`,
+      title: `${labelOf(first.subjectId)} was not at ${labelOf(first.objectId)}`,
+      eyebrow: 'Competing account',
+      summary: `Reads ${first.id} as the mistaken placement and keeps ${second.id} standing.`,
+      excludedEdgeIds: new Set([first.id]),
+      hypothesisIds: [contradiction.id],
+    },
+    {
+      key: `WITHOUT-${second.id}`,
+      title: `${labelOf(second.subjectId)} was not at ${labelOf(second.objectId)}`,
+      eyebrow: 'Competing account',
+      summary: `Reads ${second.id} as the mistaken placement and keeps ${first.id} standing.`,
+      excludedEdgeIds: new Set([second.id]),
+      hypothesisIds: [contradiction.id],
+    },
+    {
+      key: 'ONE-PLACE',
+      title: `${labelOf(first.objectId)} and ${labelOf(second.objectId)} are one place`,
+      eyebrow: 'Reconciling account',
+      summary:
+        'Keeps both placements by treating the two location records as one physical place under different names.',
+      excludedEdgeIds: new Set<string>(),
+      hypothesisIds: [contradiction.id],
+    },
+  ];
+}
+
+/**
+ * Competing accounts of the case, each labeling every statement with how well
+ * the record actually supports it under that account.
+ */
+export function buildReconstructions(
+  state: CaseState,
+  options: { timestamp?: string } = {},
+): Reconstruction[] {
+  if (state.worldEdges.length === 0) return [];
+  const updatedAt = options.timestamp ?? new Date().toISOString();
+  const labelOf = (entityId: string): string =>
+    state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
+
+  const openReferenceEntityIds = new Set<string>();
+  for (const reference of state.unresolvedReferences) {
+    if (reference.status === 'resolved') continue;
+    for (const binding of reference.candidateBindings) {
+      if (binding.entityId) openReferenceEntityIds.add(binding.entityId);
+    }
+  }
+
+  const orderedEdges = [...state.worldEdges].sort(
+    (left, right) =>
+      (left.validTime?.earliest ?? '~').localeCompare(right.validTime?.earliest ?? '~') ||
+      left.id.localeCompare(right.id),
+  );
+
+  const drafts = reconstructionBranches(state).map((branch) => {
+    const statements: ReconstructionStatement[] = orderedEdges.map((edge) => {
+      const status = statementStatus(
+        state,
+        edge,
+        branch.excludedEdgeIds.has(edge.id),
+        openReferenceEntityIds,
+      );
+      return {
+        id: `RS-${branch.key}-${edge.id}`,
+        timeLabel: intervalLabel(edge),
+        text: `${labelOf(edge.subjectId)} ${readablePredicate(edge.predicate)} ${labelOf(edge.objectId)}.`,
+        status,
+        sourceIds: [edge.id, ...edge.sourceObservationIds, ...edge.sourceClaimIds],
+      };
+    });
+
+    const points: CoveragePoint[] = state.observations.map((observation) => {
+      const backing = state.worldEdges.filter(
+        (edge) =>
+          edge.sourceObservationIds.includes(observation.id) &&
+          !branch.excludedEdgeIds.has(edge.id),
+      );
+      let support: CoveragePoint['support'];
+      if (backing.length === 0) support = 'unexplained';
+      else if (backing.some((edge) => artifactsBehind(state, edge).size >= 2)) {
+        support = 'multi-source';
+      } else support = 'direct';
+      return {
+        id: observation.id,
+        weight: Math.max(1, observation.materialWeight),
+        support,
+      };
+    });
+    const coverage = computeWeightedCoverage(
+      points.length > 0
+        ? points
+        : [{ id: 'no-observations', weight: 1, support: 'inferred' }],
+    );
+
+    const requiredAssumptionIds = [
+      ...new Set(
+        orderedEdges
+          .filter((edge) => !branch.excludedEdgeIds.has(edge.id))
+          .flatMap((edge) => edge.assumptionIds),
+      ),
+    ];
+
+    return {
+      branch,
+      statements,
+      coverage,
+      requiredAssumptionIds,
+      contradictions: statements.filter((statement) => statement.status === 'DISPUTED')
+        .length,
+    };
+  });
+
+  return drafts
+    .sort(
+      (left, right) =>
+        right.coverage.coveragePercent - left.coverage.coveragePercent ||
+        left.contradictions - right.contradictions ||
+        left.branch.key.localeCompare(right.branch.key),
+    )
+    .map((draft, index) => ({
+      id: `R-${draft.branch.key}`,
+      caseId: state.metadata.id,
+      title: draft.branch.title,
+      eyebrow: index === 0 ? draft.branch.eyebrow : 'Alternative account',
+      summary: draft.branch.summary,
+      rank: index + 1,
+      isLeading: index === 0,
+      coveragePercent: draft.coverage.coveragePercent,
+      coverageBreakdown: draft.coverage.breakdown,
+      materialPoints: draft.coverage.materialPoints,
+      explainedPoints: draft.coverage.explainedPoints,
+      contradictions: draft.contradictions,
+      assumptions: draft.requiredAssumptionIds.length,
+      statements: draft.statements,
+      hypothesisIds: draft.branch.hypothesisIds,
+      requiredAssumptionIds: draft.requiredAssumptionIds,
+      updatedAt,
+    }));
+}
+
+export interface InferencePassOptions {
+  timestamp?: string;
+  /** Upper bound on records read in one pass; a large corpus degrades to a sample. */
+  maxRecords?: number;
+}
+
+function mergeById<T extends { id: string }>(existing: T[], derived: readonly T[]): number {
+  const known = new Set(existing.map((item) => item.id));
+  let added = 0;
+  for (const item of derived) {
+    if (known.has(item.id)) continue;
+    existing.push(item);
+    known.add(item.id);
+    added += 1;
+  }
+  return added;
+}
+
+/**
+ * One full derivation over a case, composed from the stages above.
+ *
+ * Every stage is isolated: a parser fault in one costs its own output and is
+ * recorded, never the whole pass. The result lands on the same
+ * `MutationResult` contract the routes already consume, and a pass that finds
+ * nothing new returns a null revision so the caller skips persistence.
+ */
+export function runInferencePass(
+  input: CaseState,
+  options: InferencePassOptions = {},
+): MutationResult {
+  const state = structuredClone(input);
+  const timestamp = options.timestamp ?? new Date().toISOString();
+  const maxRecords = options.maxRecords ?? 1_500;
+  const auditSteps: string[] = [];
+
+  const before = JSON.stringify([
+    state.entities,
+    state.worldEdges,
+    state.unresolvedReferences,
+    state.assumptions,
+    state.beliefs,
+    state.beliefEdges,
+    state.reconstructions,
+    state.anomalies,
+    state.temporalConstraints,
+  ]);
+
+  const totalRecords = state.observations.length + state.claims.length;
+  const observationBudget = Math.min(state.observations.length, maxRecords);
+  const claimBudget = Math.max(0, maxRecords - observationBudget);
+  const observations = state.observations.slice(0, observationBudget);
+  const claims = state.claims.slice(0, claimBudget);
+  if (totalRecords > maxRecords) {
+    auditSteps.push(
+      `INGESTOR bounded this pass to ${maxRecords} of ${totalRecords} records; the remainder is untouched, not summarized.`,
+    );
+  }
+
+  const runStage = (name: string, stage: () => string | null): void => {
+    try {
+      const note = stage();
+      if (note) auditSteps.push(note);
+    } catch (error) {
+      auditSteps.push(
+        `${name} failed and was skipped: ${error instanceof Error ? error.message : String(error)}. The remaining stages still ran.`,
+      );
+    }
+  };
+
+  let mentions: EntityMention[] = [];
+  runStage('INGESTOR', () => {
+    mentions = extractEntityMentions(observations, claims);
+    return `INGESTOR read ${mentions.length} surface mention${mentions.length === 1 ? '' : 's'} from ${observations.length} observation${observations.length === 1 ? '' : 's'} and ${claims.length} claim${claims.length === 1 ? '' : 's'}.`;
+  });
+
+  runStage('RESOLVER', () => {
+    const resolution = resolveEntities(mentions, state.entities, {
+      caseId: state.metadata.id,
+    });
+    state.entities = resolution.entities;
+    const added = mergeById(state.unresolvedReferences, resolution.references);
+    return `RESOLVER holds ${state.entities.length} entit${state.entities.length === 1 ? 'y' : 'ies'} and left ${added} new reference${added === 1 ? '' : 's'} unresolved rather than merging them.`;
+  });
+
+  runStage('LINKER', () => {
+    const derived = deriveWorldEdges({
+      caseId: state.metadata.id,
+      observations,
+      claims,
+      entities: state.entities,
+      mentions,
+      timestamp,
+    });
+    const addedEdges = mergeById(state.worldEdges, derived.edges);
+    for (const assumption of derived.assumptions) {
+      const existing = state.assumptions.find((item) => item.id === assumption.id);
+      if (!existing) {
+        state.assumptions.push(assumption);
+        continue;
+      }
+      existing.sourceEvidenceIds = [
+        ...new Set([...existing.sourceEvidenceIds, ...assumption.sourceEvidenceIds]),
+      ];
+    }
+    return `LINKER derived ${addedEdges} new relationship${addedEdges === 1 ? '' : 's'}, each bound to its sources and to the assumption it required.`;
+  });
+
+  runStage('CHRONOLOGIST', () => {
+    const temporal = deriveTemporalConstraints(state);
+    state.temporalConstraints = temporal.constraints;
+    return temporal.consistent
+      ? `CHRONOLOGIST checked ${temporal.constraints.length} interval constraint${temporal.constraints.length === 1 ? '' : 's'} and found the network consistent.`
+      : `CHRONOLOGIST found the interval network inconsistent: ${temporal.contradictions.slice(0, 3).join('; ')}.`;
+  });
+
+  runStage('FALSIFIER', () => {
+    const contradictions = detectContradictions(state);
+    const added = mergeById(state.beliefs, contradictions.beliefs);
+    for (const edgeId of contradictions.disputedEdgeIds) {
+      const edge = state.worldEdges.find((item) => item.id === edgeId);
+      if (edge) edge.disputed = true;
+    }
+    return `FALSIFIER found ${added} new contradiction${added === 1 ? '' : 's'} and marked ${contradictions.disputedEdgeIds.length} relationship${contradictions.disputedEdgeIds.length === 1 ? '' : 's'} disputed.`;
+  });
+
+  runStage('HYPOTHESIS ENGINE', () => {
+    const abduction = abduceHypotheses(state);
+    const added = mergeById(state.beliefs, abduction.beliefs);
+    mergeById(state.beliefEdges, abduction.beliefEdges);
+    state.reconstructions = buildReconstructions(state, { timestamp });
+    return `HYPOTHESIS ENGINE offered ${added} competing explanation${added === 1 ? '' : 's'} and rebuilt ${state.reconstructions.length} account${state.reconstructions.length === 1 ? '' : 's'} without selecting one.`;
+  });
+
+  runStage('INVESTIGATOR', () => {
+    const ranked = rankOpenQuestions(state);
+    // An answered question keeps its answer; ranking never resurrects it.
+    const answered = new Map(
+      state.anomalies.map((anomaly) => [anomaly.id, anomaly] as const),
+    );
+    state.anomalies = ranked.map((anomaly) => {
+      const existing = answered.get(anomaly.id);
+      if (!existing) return anomaly;
+      return { ...anomaly, status: existing.status, lastResult: existing.lastResult };
+    });
+    return `INVESTIGATOR ranked ${state.anomalies.length} open question${state.anomalies.length === 1 ? '' : 's'} by expected information gain.`;
+  });
+
+  const after = JSON.stringify([
+    state.entities,
+    state.worldEdges,
+    state.unresolvedReferences,
+    state.assumptions,
+    state.beliefs,
+    state.beliefEdges,
+    state.reconstructions,
+    state.anomalies,
+    state.temporalConstraints,
+  ]);
+
+  if (before === after) {
+    return {
+      state,
+      revision: null,
+      auditSteps: [...auditSteps, 'No derivation changed the case; nothing was persisted.'],
+    };
+  }
+
+  const sequence = state.metadata.revision + 1;
+  const revision: CaseRevision = {
+    id: `REV-${String(sequence).padStart(3, '0')}`,
+    caseId: state.metadata.id,
+    sequence,
+    createdAt: timestamp,
+    title: 'Derivation pass over the case record',
+    summary: `${state.entities.length} entities, ${state.worldEdges.length} relationships, ${state.beliefs.filter((belief) => belief.kind === 'contradiction').length} contradictions, and ${state.anomalies.length} open questions now stand on the record.`,
+    triggerEvidenceId: null,
+    changes: [
+      {
+        id: `REV-${String(sequence).padStart(3, '0')}-C1`,
+        kind: 'edge',
+        subjectId: state.metadata.id,
+        label: 'Derived world relationships',
+        before: null,
+        after: `${state.worldEdges.length} relationships across ${state.entities.length} entities`,
+        direction: 'added',
+      },
+    ],
+    trace: auditSteps.slice(0, 6).map((step, index) => ({
+      id: `REV-${String(sequence).padStart(3, '0')}-T${index + 1}`,
+      kind: 'evidence' as const,
+      label: step,
+      relation: 'was recorded during the derivation pass',
+    })),
+  };
+  state.revisions.unshift(revision);
+  state.metadata.revision = sequence;
+  state.metadata.updatedAt = timestamp;
+
+  return { state, revision, auditSteps };
 }
