@@ -7,8 +7,12 @@ test.beforeEach(async ({ request }) => {
 
 test('critical board, provenance, investigation, cascade, upload, and reset flow', async ({
   page,
+  request,
 }) => {
   const errors = collectPageErrors(page);
+  const health = (await (await request.get('http://127.0.0.1:8787/api/health')).json()) as {
+    engineLabel: string;
+  };
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'The Agentic Detective.' })).toBeVisible();
   await page.getByRole('button', { name: /Open Case 17/ }).click();
@@ -58,7 +62,7 @@ test('critical board, provenance, investigation, cascade, upload, and reset flow
   await page.getByRole('button', { name: 'Open engine status' }).click();
   const status = page.getByRole('dialog', { name: 'Engine status' });
   await expect(status.getByText('No simulated integrations')).toBeVisible();
-  await expect(status.getByText('Atlas Local evidence engine')).toBeVisible();
+  await expect(status.getByText(health.engineLabel)).toBeVisible();
   await status.getByRole('button', { name: 'Close engine status' }).click();
 
   await page.getByRole('button', { name: 'Add evidence' }).click();

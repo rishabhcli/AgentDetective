@@ -295,6 +295,12 @@ export function AgentWorkspace({
             </span>
           </button>
         </div>
+        <p className={scope === 'connected' ? 'is-connected' : undefined}>
+          {scope === 'connected' ? <Globe2 size={14} aria-hidden="true" /> : <FileSearch size={14} aria-hidden="true" />}
+          {scope === 'connected'
+            ? 'Searches the connected surfaces you allowed and records every source it checked.'
+            : 'Searches the case file and records every source it checked.'}
+        </p>
       </section>
 
       <section className="agent-presence-list" aria-label="Seven case agents">
@@ -567,7 +573,7 @@ export function AgentWorkspace({
                 <header>
                   <Sparkles size={16} aria-hidden="true" />
                   <span>
-                    <strong>Findings</strong>
+                    <strong>What survived</strong>
                     <small>{session.findings.length} traceable findings</small>
                   </span>
                 </header>
@@ -602,7 +608,7 @@ export function AgentWorkspace({
                 <header>
                   <Radar size={16} aria-hidden="true" />
                   <span>
-                    <strong>Sources checked</strong>
+                    <strong>Source trail</strong>
                     <small>Found, empty, and unavailable</small>
                   </span>
                 </header>
@@ -645,7 +651,7 @@ export function AgentWorkspace({
                 <header>
                   <CircleSlash2 size={16} aria-hidden="true" />
                   <span>
-                    <strong>Not established</strong>
+                    <strong>Checked, not established</strong>
                     <small>Checks that did not close the question</small>
                   </span>
                 </header>
