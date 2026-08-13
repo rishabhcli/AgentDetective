@@ -48,7 +48,8 @@ import type {
  * than producing nothing.
  */
 
-export type MentionChannel = 'speaker' | 'lexical' | 'identifier' | 'locative' | 'vague';
+export type MentionChannel =
+  'speaker' | 'lexical' | 'identifier' | 'locative' | 'coreference' | 'vague';
 
 /**
  * A thing a record *said*, before anything decides whether it names a
@@ -237,6 +238,30 @@ const PLACE_HEAD_WORDS = new Set([
   'floor',
 ]);
 
+/**
+ * Pronouns that can stand in for a person already named.
+ *
+ * Resolution below is positional and never consults the pronoun's form to pick
+ * between candidates. Choosing an antecedent by the gender a pronoun implies
+ * would invent a fact about a person and would be wrong exactly when the
+ * implication is wrong, so two candidates simply stay two candidates.
+ */
+const PERSON_PRONOUNS = new Set([
+  'he',
+  'she',
+  'they',
+  'him',
+  'her',
+  'them',
+  'his',
+  'hers',
+  'their',
+  'theirs',
+  'themselves',
+  'himself',
+  'herself',
+]);
+
 interface ExtractedToken {
   raw: string;
   word: string;
@@ -277,6 +302,8 @@ function isNumericToken(word: string): boolean {
 
 interface MentionDraft {
   surfaceForm: string;
+  /** Set when the surface form stands in for a name stated elsewhere. */
+  resolvedTo?: string;
   start: number;
   channel: MentionChannel;
   kindWeights: Record<string, number>;
@@ -452,6 +479,58 @@ function lexicalDrafts(text: string): MentionDraft[] {
   return drafts;
 }
 
+function isPersonLike(kindWeights: Record<string, number>): boolean {
+  const person = kindWeights.person ?? 0;
+  return (
+    Object.entries(kindWeights).every(
+      ([kind, weight]) => kind === 'person' || weight <= person,
+    ) && person > 0
+  );
+}
+
+/**
+ * Pronoun references resolved to a single unambiguous antecedent.
+ *
+ * `priorCandidates` carries forward the person named by earlier records of the
+ * same artifact, because line-level extraction usually separates a pronoun from
+ * the name it refers to. Anything ambiguous is left unresolved: a wrong
+ * antecedent manufactures a relationship that no source ever stated.
+ */
+function coreferenceDrafts(
+  text: string,
+  within: readonly MentionDraft[],
+  priorCandidates: ReadonlySet<string>,
+): MentionDraft[] {
+  const drafts: MentionDraft[] = [];
+  for (const match of text.matchAll(/\b[\p{L}']+\b/gu)) {
+    const word = match[0];
+    if (!PERSON_PRONOUNS.has(word.toLocaleLowerCase())) continue;
+    const start = match.index;
+    const earlier = new Set(
+      within
+        .filter(
+          (draft) =>
+            draft.start >= 0 && draft.start < start && isPersonLike(draft.kindWeights),
+        )
+        .map((draft) => draft.surfaceForm.toLocaleLowerCase()),
+    );
+    const candidates = earlier.size > 0 ? earlier : priorCandidates;
+    if (candidates.size !== 1) continue;
+    const antecedent = [...candidates][0];
+    if (!antecedent) continue;
+    drafts.push({
+      surfaceForm: word,
+      resolvedTo: antecedent,
+      start,
+      channel: 'coreference',
+      kindWeights: { person: 0.9, identity: 0.1 },
+      confidence: 0.45,
+      vague: false,
+    });
+  }
+  return drafts;
+}
+
 function draftsToMentions(
   drafts: MentionDraft[],
   source: {
@@ -489,7 +568,12 @@ function draftsToMentions(
   return kept.map((draft, index) => ({
     id: `MEN-${source.recordId}-${index + 1}`,
     surfaceForm: draft.surfaceForm,
-    normalized: draft.surfaceForm.toLocaleLowerCase().replace(/\s+/gu, ' ').trim(),
+    // A resolved pronoun keeps the word the record used but clusters under the
+    // name it stands for.
+    normalized: (draft.resolvedTo ?? draft.surfaceForm)
+      .toLocaleLowerCase()
+      .replace(/\s+/gu, ' ')
+      .trim(),
     kindProbabilities: normalizeDistribution(draft.kindWeights),
     sourceEvidenceId: source.evidenceId,
     sourceRecordId: source.recordId,
@@ -511,51 +595,85 @@ export function extractEntityMentions(
   claims: readonly Claim[],
 ): EntityMention[] {
   const mentions: EntityMention[] = [];
+  // The person most recently named by this artifact, carried forward so a
+  // pronoun in a later record can find the name it stands for. Scoped per
+  // artifact: reaching across sources would invent a link between them.
+  const priorPersonByArtifact = new Map<string, Set<string>>();
 
-  for (const observation of observations) {
-    const text = observation.text ?? '';
-    mentions.push(
-      ...draftsToMentions(
-        [...identifierDrafts(text), ...lexicalDrafts(text), ...vagueDrafts(text)],
-        {
-          recordId: observation.id,
-          recordType: 'observation',
-          evidenceId: observation.sourceEvidenceId,
-          locator: observation.locator || 'unlocated observation',
-          context: text.slice(0, 240),
-        },
-      ),
-    );
-  }
-
-  for (const claim of claims) {
-    const text = claim.verbatim ?? '';
+  const collect = (
+    text: string,
+    source: {
+      recordId: string;
+      recordType: 'observation' | 'claim';
+      evidenceId: string;
+      locator: string;
+    },
+    leading: MentionDraft[] = [],
+  ): void => {
     const drafts = [
+      ...leading,
       ...identifierDrafts(text),
       ...lexicalDrafts(text),
       ...vagueDrafts(text),
     ];
+    drafts.push(
+      ...coreferenceDrafts(
+        text,
+        drafts,
+        priorPersonByArtifact.get(source.evidenceId) ?? new Set<string>(),
+      ),
+    );
+
+    const namedPeople = new Set(
+      drafts
+        .filter(
+          (draft) =>
+            draft.start >= 0 &&
+            draft.channel !== 'coreference' &&
+            isPersonLike(draft.kindWeights),
+        )
+        .map((draft) => draft.surfaceForm.toLocaleLowerCase()),
+    );
+    // Nearest antecedent: the latest record that named anyone replaces the
+    // candidate set rather than accumulating with it.
+    if (namedPeople.size > 0) priorPersonByArtifact.set(source.evidenceId, namedPeople);
+
+    mentions.push(...draftsToMentions(drafts, { ...source, context: text.slice(0, 240) }));
+  };
+
+  for (const observation of observations) {
+    collect(observation.text ?? '', {
+      recordId: observation.id,
+      recordType: 'observation',
+      evidenceId: observation.sourceEvidenceId,
+      locator: observation.locator || 'unlocated observation',
+    });
+  }
+
+  for (const claim of claims) {
     const speaker = claim.speaker?.trim();
-    if (speaker) {
-      // The speaker is attached ahead of the quoted span so it sorts first and
-      // never loses an overlap contest with text inside the quotation.
-      drafts.unshift({
-        surfaceForm: speaker,
-        start: -1,
-        channel: 'speaker',
-        kindWeights: { person: 0.85, organization: 0.1, identity: 0.05 },
-        confidence: 0.9,
-        vague: false,
-      });
-    }
-    mentions.push(
-      ...draftsToMentions(drafts, {
+    collect(
+      claim.verbatim ?? '',
+      {
         recordId: claim.id,
         recordType: 'claim',
         evidenceId: claim.sourceEvidenceId,
         locator: `quoted claim ${claim.id}`,
-        context: text.slice(0, 240),
-      }),
+      },
+      speaker
+        ? [
+            {
+              // Attached ahead of the quoted span so it sorts first and never
+              // loses an overlap contest with text inside the quotation.
+              surfaceForm: speaker,
+              start: -1,
+              channel: 'speaker',
+              kindWeights: { person: 0.85, organization: 0.1, identity: 0.05 },
+              confidence: 0.9,
+              vague: false,
+            },
+          ]
+        : [],
     );
   }
 
@@ -890,6 +1008,13 @@ const LEAPS = {
       'A single observation naming two participants is read as placing them in contact. The observation may instead be listing them, comparing them, or describing them at different moments.',
     discount: 0.85,
   },
+  coreference: {
+    id: 'A-LEAP-COREFERENCE',
+    label: 'A pronoun was read as referring to the person named before it',
+    detail:
+      'The relationship depends on resolving a pronoun to an antecedent stated elsewhere in the same artifact. It fails if the pronoun refers to someone the record never named, or to a different person than the nearest one.',
+    discount: 0.75,
+  },
   testimony: {
     id: 'A-LEAP-TESTIMONY',
     label: 'The speaker described this relationship accurately',
@@ -1009,14 +1134,19 @@ export function deriveWorldEdges(
     const claim = claimById.get(recordId);
     if (!observation && !claim) continue;
 
-    const resolved: Array<{ entity: Entity; mention: EntityMention }> = [];
-    const seen = new Set<string>();
+    // A directly named mention outranks a resolved pronoun for the same
+    // participant, so an edge only carries the coreference leap when the
+    // pronoun is the record's sole reference to them.
+    const byEntity = new Map<string, { entity: Entity; mention: EntityMention }>();
     for (const mention of recordMentions) {
       const entity = entityByNormalized.get(mention.normalized);
-      if (!entity || seen.has(entity.id)) continue;
-      seen.add(entity.id);
-      resolved.push({ entity, mention });
+      if (!entity) continue;
+      const existing = byEntity.get(entity.id);
+      if (existing && existing.mention.channel !== 'coreference') continue;
+      if (existing && mention.channel === 'coreference') continue;
+      byEntity.set(entity.id, { entity, mention });
     }
+    const resolved = [...byEntity.values()];
 
     const leap: LeapKind = observation ? 'co-presence' : 'testimony';
     const base = observation
@@ -1042,13 +1172,19 @@ export function deriveWorldEdges(
         const predicate = predicateFor(subjectSide.entity.kind, objectSide.entity.kind);
         const key = `${subjectSide.entity.id}|${predicate}|${objectSide.entity.id}`;
 
+        const pairLeaps: LeapKind[] = [leap];
+        if (a.mention.channel === 'coreference' || b.mention.channel === 'coreference') {
+          pairLeaps.push('coreference');
+        }
         const support = round(
-          base *
-            a.mention.confidence *
-            b.mention.confidence *
-            subjectSide.entity.confidence *
-            objectSide.entity.confidence *
-            LEAPS[leap].discount,
+          pairLeaps.reduce(
+            (value, kind) => value * LEAPS[kind].discount,
+            base *
+              a.mention.confidence *
+              b.mention.confidence *
+              subjectSide.entity.confidence *
+              objectSide.entity.confidence,
+          ),
           4,
         );
 
@@ -1084,7 +1220,7 @@ export function deriveWorldEdges(
           }
           accumulator.evidenceIds.add(claim.sourceEvidenceId);
         }
-        accumulator.leaps.add(leap);
+        for (const kind of pairLeaps) accumulator.leaps.add(kind);
         accumulator.supports.push(support);
         accumulator.contributions.push({
           sourceId: recordId,

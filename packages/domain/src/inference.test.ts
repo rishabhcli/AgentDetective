@@ -2002,3 +2002,148 @@ describe('detectContradictions at scale', () => {
     expect(result.beliefs.length).toBeLessThanOrEqual(500);
   });
 });
+
+describe('coreference', () => {
+  it('resolves a pronoun to the one person named before it in the same record', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          verbatim: 'Dana Reyes arrived at the gate. She was carrying a sealed box.',
+        }),
+      ],
+    );
+
+    const referred = mentions.filter((mention) => mention.channel === 'coreference');
+    expect(referred).toHaveLength(1);
+    expect(referred[0]?.surfaceForm).toBe('She');
+    expect(referred[0]?.normalized).toBe('dana reyes');
+  });
+
+  it('refuses to guess when two people could be the antecedent', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          verbatim: 'Dana Reyes met Marcus Webb at the gate. They left together.',
+        }),
+      ],
+    );
+
+    expect(mentions.filter((mention) => mention.channel === 'coreference')).toEqual([]);
+  });
+
+  it('leaves a pronoun with no antecedent alone', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [claim({ id: 'C-1', verbatim: 'She was already waiting at the gate.' })],
+    );
+
+    expect(mentions.filter((mention) => mention.channel === 'coreference')).toEqual([]);
+  });
+
+  it('rates a resolved pronoun below the naming that anchors it', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          verbatim: 'Dana Reyes arrived at the gate. She signed the manifest.',
+        }),
+      ],
+    );
+
+    const named = mentions.find((mention) => mention.surfaceForm === 'Dana Reyes');
+    const referred = mentions.find((mention) => mention.channel === 'coreference');
+    expect(referred?.confidence).toBeLessThan(named?.confidence ?? 0);
+  });
+
+  it('does not use the pronoun form to choose between candidates', () => {
+    // Selecting an antecedent by the gender a pronoun implies would both invent
+    // a fact about a person and be wrong whenever the implication is wrong.
+    // Resolution is positional, so two candidates stay two candidates.
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          verbatim: 'Dana Reyes briefed Marcus Webb. She approved the transfer.',
+        }),
+      ],
+    );
+
+    expect(mentions.filter((mention) => mention.channel === 'coreference')).toEqual([]);
+  });
+
+  it('resolves a pronoun to a person named in the artifact record before it', () => {
+    // Line-level extraction gives each sentence its own record, so the pronoun
+    // and the name it refers to usually land in different records.
+    const mentions = extractEntityMentions(
+      [
+        observation({ id: 'O-1', text: 'Dana Reyes entered the yard.' }),
+        observation({ id: 'O-2', text: 'She was seen at Pier 48.' }),
+      ],
+      [],
+    );
+
+    const referred = mentions.find((mention) => mention.channel === 'coreference');
+    expect(referred?.sourceRecordId).toBe('O-2');
+    expect(referred?.normalized).toBe('dana reyes');
+  });
+
+  it('does not reach across into a different artifact for an antecedent', () => {
+    const mentions = extractEntityMentions(
+      [
+        observation({
+          id: 'O-1',
+          text: 'Dana Reyes entered the yard.',
+          sourceEvidenceId: 'EV-A',
+        }),
+        observation({
+          id: 'O-2',
+          text: 'She was seen at Pier 48.',
+          sourceEvidenceId: 'EV-B',
+        }),
+      ],
+      [],
+    );
+
+    expect(mentions.filter((mention) => mention.channel === 'coreference')).toEqual([]);
+  });
+
+  it('carries a coreference leap onto any relationship derived through it', () => {
+    const observations = [
+      observation({ id: 'O-1', text: 'Dana Reyes entered the yard.' }),
+      observation({ id: 'O-2', text: 'She was seen at Pier 48.' }),
+    ];
+    const mentions = extractEntityMentions(observations, []);
+    const dana = entity({
+      id: 'E-DANA',
+      label: 'Dana Reyes',
+      kind: 'person',
+      confidence: 0.8,
+    });
+    const pier = entity({
+      id: 'E-PIER',
+      label: 'Pier 48',
+      kind: 'location',
+      confidence: 0.8,
+    });
+
+    const result = deriveWorldEdges({
+      caseId: 'case-test',
+      observations,
+      claims: [],
+      entities: [dana, pier],
+      mentions,
+    });
+
+    expect(result.edges.length).toBeGreaterThan(0);
+    expect(
+      result.edges.some((edge) => edge.assumptionIds.includes('A-LEAP-COREFERENCE')),
+    ).toBe(true);
+    expect(result.assumptions.some((item) => item.id === 'A-LEAP-COREFERENCE')).toBe(true);
+  });
+});
