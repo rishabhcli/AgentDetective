@@ -138,12 +138,17 @@ describe('THREAD API', () => {
       response.body.run.steps.find((step: { agent: string }) => step.agent === 'LINKER')
         .detail,
     ).toContain('provenance-bearing relationship');
-    expect(response.body.packet.semanticMatchIds).toEqual([]);
-    expect(response.body.packet.retrievalHits.length).toBeGreaterThan(0);
+    const packet = response.body.packet as {
+      semanticMatchIds: string[];
+      observationIds: string[];
+      retrievalHits: Array<{ matchedBy: string[]; observationId: string }>;
+    };
+    expect(packet.semanticMatchIds).toEqual([]);
+    expect(packet.retrievalHits.length).toBeGreaterThan(0);
     expect(
-      response.body.packet.retrievalHits.every(
-        (hit: { matchedBy: string[]; observationId: string }) =>
-          response.body.packet.observationIds.includes(hit.observationId) &&
+      packet.retrievalHits.every(
+        (hit) =>
+          packet.observationIds.includes(hit.observationId) &&
           !hit.matchedBy.includes('semantic'),
       ),
     ).toBe(true);

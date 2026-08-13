@@ -18,7 +18,12 @@ function stubCatalog(
   },
 ) {
   const fetchStub = vi.fn((input: string | URL | Request) => {
-    const url = typeof input === 'string' ? input : input.toString();
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
     const responseBody = url.includes('/inference/') ? inference : body;
     return Promise.resolve(new Response(JSON.stringify(responseBody), { status }));
   });
