@@ -19,6 +19,7 @@ import type {
   Claim,
   EdgeContribution,
   Entity,
+  EvidenceArtifact,
   EntityKind,
   LensId,
   MutationResult,
@@ -1026,6 +1027,9 @@ const LEAPS = {
 
 type LeapKind = keyof typeof LEAPS;
 
+/** Prefix for the per-artifact reliability warrant. */
+export const SOURCE_WARRANT_PREFIX = 'A-SOURCE-';
+
 /** Agent-like kinds sort first so an asymmetric predicate gets a stable subject. */
 const KIND_RANK: Record<EntityKind, number> = {
   person: 0,
@@ -1071,6 +1075,8 @@ export interface WorldEdgeDerivationInput {
   claims: readonly Claim[];
   entities: readonly Entity[];
   mentions: readonly EntityMention[];
+  /** Only used to name each artifact's reliability warrant readably. */
+  evidence?: readonly EvidenceArtifact[];
   timestamp?: string;
 }
 
@@ -1236,6 +1242,7 @@ export function deriveWorldEdges(
   }
 
   const assumptionUsage = new Map<LeapKind, Set<string>>();
+  const sourceWarrants = new Map<string, string>();
   const edges: WorldEdge[] = [];
 
   for (const accumulator of accumulators.values()) {
@@ -1268,22 +1275,47 @@ export function deriveWorldEdges(
       disputed: false,
       alternatives: [],
       createdByAgent: 'linker',
-      assumptionIds: leaps.map((leap) => LEAPS[leap].id),
+      assumptionIds: [
+        ...leaps.map((leap) => LEAPS[leap].id),
+        // Every artifact carries an implicit warrant — that it is what it
+        // purports to be and reports accurately. Making it explicit is what
+        // lets an investigator discredit one source and watch exactly its
+        // footprint recede, using the same cascade as any other assumption.
+        ...[...accumulator.evidenceIds].map((evidenceId) => {
+          const id = `${SOURCE_WARRANT_PREFIX}${evidenceId}`;
+          sourceWarrants.set(evidenceId, id);
+          return id;
+        }),
+      ],
       lenses: lensesFor([accumulator.subject.kind, accumulator.object.kind]),
     });
   }
 
-  const assumptions: Assumption[] = [...assumptionUsage.entries()].map(
-    ([leap, evidenceIds]) => ({
+  const artifactLabel = (evidenceId: string): string => {
+    const artifact = input.evidence?.find((item) => item.id === evidenceId);
+    return artifact ? `${artifact.title} (${artifact.id})` : evidenceId;
+  };
+  const assumptions: Assumption[] = [
+    ...[...assumptionUsage.entries()].map(([leap, evidenceIds]) => ({
       id: LEAPS[leap].id,
       caseId: input.caseId,
       label: LEAPS[leap].label,
       detail: LEAPS[leap].detail,
-      status: 'valid',
+      status: 'valid' as const,
       sourceEvidenceIds: [...evidenceIds],
       invalidatedByEvidenceId: null,
-    }),
-  );
+    })),
+    ...[...sourceWarrants.entries()].map(([evidenceId, id]) => ({
+      id,
+      caseId: input.caseId,
+      label: `${artifactLabel(evidenceId)} is what it purports to be and reports accurately`,
+      detail:
+        'Everything read out of this artifact rests on it being genuine, correctly attributed, and not deliberately misleading. Discrediting it withdraws exactly its own footprint and leaves independently sourced relationships standing.',
+      status: 'valid' as const,
+      sourceEvidenceIds: [evidenceId],
+      invalidatedByEvidenceId: null,
+    })),
+  ];
 
   return { edges, assumptions };
 }
@@ -2520,6 +2552,7 @@ export function runInferencePass(
       claims,
       entities: state.entities,
       mentions,
+      evidence: state.evidence,
       timestamp,
     });
     const addedEdges = mergeById(state.worldEdges, derived.edges);

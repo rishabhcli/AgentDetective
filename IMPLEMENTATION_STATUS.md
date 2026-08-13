@@ -17,25 +17,27 @@ had been created. A new case stayed an empty graph.
 `packages/domain/src/inference.ts` is a pure deriving layer that closes that
 gap. Exercised on this machine:
 
-| Capability               | Evidence boundary                                                                                                                                                          |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mention extraction       | Speakers, capitalized name runs, identifier shapes and locative phrases read from arbitrary observations and claims, each bound to the record and locator that produced it |
-| Identity resolution      | Mentions clustered without hard merges; vague forms stay unresolved; a partial name becomes candidate bindings with open-world mass reserved                               |
-| Temporal placement       | Intervals read from timestamps sources already carry, including a leading timestamp that line-level quoting drops; a bare clock with no date anchor stays null             |
-| Relationship derivation  | Co-occurrence turned into provenance-bound edges; testimony scored through its Admiralty rating; every edge carries an explicit assumption naming its leap                 |
-| Contradiction detection  | Overlapping placements, placements too close to travel between under a stated transit warrant, and one artifact denying another                                            |
-| Abduction                | A contradiction answered with the competing explanations that would dissolve it; none selected                                                                             |
-| Reconstruction           | Competing accounts whose every statement carries a support label computed from its own sources                                                                             |
-| Question ranking         | Anomalies ordered by expected information gain over the live distribution                                                                                                  |
-| Stage reporting + critic | One report per agent (completed / skipped with reason / failed) driving the run ledger, plus `assessDerivation` grading the pass by exposure                               |
-| General investigation    | `Investigate` rescores identities, weighs contradictions by corroboration, and searches for corroboration of lone relationships — recording refusals as results            |
-| General cascade          | `challengeAssumption` invalidates any warrant in any case and propagates through ATMS environments, dependent edges and derived accounts                                   |
-| Case lifecycle           | `POST /api/cases`, `DELETE /api/cases/:caseId` (bundled fixtures refused), `POST /api/cases/:caseId/infer`, and the web controls for all three                             |
-| Browser proof            | `tests/newcase.spec.ts` opens an empty case, preserves ordinary text files, and asserts participants, relationships, contradictions, competing accounts and the cascade    |
+| Capability               | Evidence boundary                                                                                                                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mention extraction       | Speakers, capitalized name runs, identifier shapes and locative phrases read from arbitrary observations and claims, each bound to the record and locator that produced it                               |
+| Identity resolution      | Mentions clustered without hard merges; vague forms stay unresolved; a partial name becomes candidate bindings with open-world mass reserved                                                             |
+| Temporal placement       | Intervals read from timestamps sources already carry, including a leading timestamp that line-level quoting drops; a bare clock with no date anchor stays null                                           |
+| Relationship derivation  | Co-occurrence turned into provenance-bound edges; testimony scored through its Admiralty rating; every edge carries an explicit assumption naming its leap                                               |
+| Contradiction detection  | Overlapping placements, placements too close to travel between under a stated transit warrant, and one artifact denying another                                                                          |
+| Abduction                | A contradiction answered with the competing explanations that would dissolve it; none selected                                                                                                           |
+| Reconstruction           | Competing accounts whose every statement carries a support label computed from its own sources                                                                                                           |
+| Question ranking         | Anomalies ordered by expected information gain over the live distribution                                                                                                                                |
+| Stage reporting + critic | One report per agent (completed / skipped with reason / failed) driving the run ledger, plus `assessDerivation` grading the pass by exposure                                                             |
+| General investigation    | `Investigate` rescores identities, weighs contradictions by corroboration, and searches for corroboration of lone relationships — recording refusals as results                                          |
+| General cascade          | `challengeAssumption` invalidates any warrant in any case and propagates through ATMS environments, dependent edges and derived accounts                                                                 |
+| Case lifecycle           | `POST /api/cases`, `DELETE /api/cases/:caseId` (bundled fixtures refused), `POST /api/cases/:caseId/infer`, and the web controls for all three                                                           |
+| Coreference              | Pronouns resolved to a single unambiguous antecedent within an artifact; two candidates stay two candidates, and the resolution never consults the pronoun's form                                        |
+| Source reliability       | Every artifact carries an explicit `A-SOURCE-<id>` warrant, so discrediting one source withdraws exactly its footprint through the same cascade and leaves the rest standing                             |
+| Browser proof            | `tests/newcase.spec.ts` opens an empty case, preserves ordinary text files, and asserts participants, relationships, contradictions, competing accounts, the assumption cascade, and source discrediting |
 
-Test counts after this work: 133 domain, 30 API, 1 web component, and 73
-passing Playwright checks (5 skipped, all provider-gated) including four new
-specs that involve no fixture.
+Test counts after this work: 147 domain, 30 API, 1 web component, and the
+Playwright suite (5 skipped, all provider-gated) including five new specs that
+involve no fixture.
 
 ### What this session did _not_ exercise
 
@@ -59,6 +61,19 @@ No new top-level `CaseState` array was introduced, so `collectionMap` and
 `normalizeCaseState` need no migration; the derived records land in arrays that
 already persist.
 
+### Follow-ups this work leaves behind
+
+- `packages/domain/src/inference.ts` is now roughly 2,900 lines. Every export
+  appears once and each stage is separately tested, but the file is doing enough
+  that it should be split into a directory module. Deliberately not done at the
+  end of a session with no time to re-validate a mechanical move of that size.
+- `assessDerivation` (inference) and `findEvidentialSilences` (deduction) both
+  report single-source relationships and unresolved identities. They serve
+  different callers — the run ledger and the deduction drawer — but the overlap
+  is real and should be reconciled rather than left to drift apart.
+- `assessDerivation`'s concerns reach the audit trail but have no dedicated
+  surface in the interface yet.
+
 ### Known bounds of the derivation itself
 
 - Mention extraction is lexical and English-shaped. It reads capitalized name
@@ -72,6 +87,9 @@ already persist.
   than doing quadratic work. The bound taken appears in the audit trail.
 - Authored reconstructions are never overwritten by derivation, so the Badge 17
   fixture keeps its curated accounts.
+- Coreference resolves within one artifact only and refuses whenever more than
+  one antecedent is possible, so it recovers the common single-subject case and
+  declines the rest rather than guessing.
 
 ## Implemented and exercised (earlier sessions)
 

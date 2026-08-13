@@ -154,6 +154,68 @@ test('two artifacts that disagree put the case into open contradiction', async (
   expect(errors).toEqual([]);
 });
 
+test('discrediting one source withdraws its footprint and leaves the other standing', async ({
+  page,
+  request,
+}) => {
+  const errors = collectPageErrors(page);
+  await openNewCase(page, 'Spec two sources');
+  await preserve(page, 'gate-log.txt', GATE_LOG);
+  await preserve(page, 'pier-log.txt', PIER_LOG);
+
+  const listed = (await (await request.get(`${API}/api/cases`)).json()) as {
+    cases: Array<{ id: string; title: string }>;
+  };
+  const caseId = listed.cases.find((item) => item.title === 'Spec two sources')?.id ?? '';
+  const before = (await (
+    await request.get(`${API}/api/cases/${encodeURIComponent(caseId)}`)
+  ).json()) as {
+    state: {
+      evidence: Array<{ id: string; fileName: string }>;
+      assumptions: Array<{ id: string }>;
+      worldEdges: Array<{ id: string; confidence: number; assumptionIds: string[] }>;
+    };
+  };
+
+  // Each artifact carries its own reliability warrant.
+  const discredited = before.state.evidence.find(
+    (item) => item.fileName === 'gate-log.txt',
+  );
+  const warrant = `A-SOURCE-${discredited?.id ?? ''}`;
+  expect(before.state.assumptions.some((item) => item.id === warrant)).toBe(true);
+
+  const resting = before.state.worldEdges.filter((edge) =>
+    edge.assumptionIds.includes(warrant),
+  );
+  const independent = before.state.worldEdges.filter(
+    (edge) => !edge.assumptionIds.includes(warrant),
+  );
+  expect(resting.length).toBeGreaterThan(0);
+  expect(independent.length).toBeGreaterThan(0);
+
+  const cascade = await request.post(
+    `${API}/api/cases/${encodeURIComponent(caseId)}/assumptions/${warrant}/challenge`,
+    { data: {} },
+  );
+  expect(cascade.ok()).toBe(true);
+  const after = (await cascade.json()) as {
+    state: { worldEdges: Array<{ id: string; confidence: number; disputed: boolean }> };
+  };
+
+  for (const edge of resting) {
+    const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+    expect(updated?.confidence).toBeLessThan(edge.confidence);
+    expect(updated?.disputed).toBe(true);
+  }
+  // The other source's relationships are untouched: discrediting a witness is
+  // not the same as discrediting the case.
+  for (const edge of independent) {
+    const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+    expect(updated?.confidence).toBe(edge.confidence);
+  }
+  expect(errors).toEqual([]);
+});
+
 test('an investigator can invalidate a derived assumption and see the cascade', async ({
   page,
   request,

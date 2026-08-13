@@ -2147,3 +2147,100 @@ describe('coreference', () => {
     expect(result.assumptions.some((item) => item.id === 'A-LEAP-COREFERENCE')).toBe(true);
   });
 });
+
+describe('source reliability as an attackable warrant', () => {
+  function twoSourceCase() {
+    const state = createEmptyCase({ id: 'case-src', title: 'Sources' });
+    for (const id of ['EV-1', 'EV-2']) {
+      state.evidence.push({
+        id,
+        caseId: 'case-src',
+        title: `Artifact ${id}`,
+        kind: 'document',
+        fileName: `${id}.txt`,
+        mimeType: 'text/plain',
+        sha256: id.padEnd(64, '0'),
+        ingestedAt: '2026-08-05T00:00:00.000Z',
+        capturedAt: null,
+        sourceLabel: `Source ${id}`,
+        chainOfCustody: 'test',
+        content: null,
+        rawLocator: null,
+        extractionStatus: 'bounded-local',
+        extractor: 'local-deterministic',
+        observationIds: [],
+        claimIds: [],
+        synthetic: false,
+        challengedByEvidenceIds: [],
+      });
+    }
+    state.observations.push(
+      observation({ id: 'O-1', text: 'Dana Reyes at Pier 48.', sourceEvidenceId: 'EV-1' }),
+      observation({
+        id: 'O-2',
+        text: 'Marcus Webb at Warehouse A.',
+        sourceEvidenceId: 'EV-2',
+      }),
+    );
+    return runInferencePass(state, { timestamp: '2026-01-01T00:00:00.000Z' }).state;
+  }
+
+  it('gives every artifact an explicit reliability warrant', () => {
+    const state = twoSourceCase();
+
+    expect(state.assumptions.some((item) => item.id === 'A-SOURCE-EV-1')).toBe(true);
+    const warrant = state.assumptions.find((item) => item.id === 'A-SOURCE-EV-1');
+    expect(warrant?.label).toContain('EV-1');
+    expect(warrant?.sourceEvidenceIds).toContain('EV-1');
+  });
+
+  it('binds each relationship to the warrant of every artifact behind it', () => {
+    const state = twoSourceCase();
+    const fromFirst = state.worldEdges.filter((edge) =>
+      edge.sourceObservationIds.includes('O-1'),
+    );
+
+    expect(fromFirst.length).toBeGreaterThan(0);
+    expect(fromFirst.every((edge) => edge.assumptionIds.includes('A-SOURCE-EV-1'))).toBe(
+      true,
+    );
+    expect(fromFirst.every((edge) => !edge.assumptionIds.includes('A-SOURCE-EV-2'))).toBe(
+      true,
+    );
+  });
+
+  it('lets an investigator discredit one source without touching the other', () => {
+    const before = twoSourceCase();
+    const firstBefore = before.worldEdges.filter((edge) =>
+      edge.assumptionIds.includes('A-SOURCE-EV-1'),
+    );
+    const secondBefore = before.worldEdges.filter((edge) =>
+      edge.assumptionIds.includes('A-SOURCE-EV-2'),
+    );
+    expect(firstBefore.length).toBeGreaterThan(0);
+    expect(secondBefore.length).toBeGreaterThan(0);
+
+    const after = challengeAssumption(before, 'A-SOURCE-EV-1', {
+      timestamp: '2026-03-03T00:00:00.000Z',
+    });
+
+    for (const edge of firstBefore) {
+      const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+      expect(updated?.confidence).toBeLessThan(edge.confidence);
+      expect(updated?.disputed).toBe(true);
+    }
+    for (const edge of secondBefore) {
+      const updated = after.state.worldEdges.find((item) => item.id === edge.id);
+      expect(updated?.confidence).toBe(edge.confidence);
+    }
+  });
+
+  it('keeps the warrant attackable but never invalid on its own', () => {
+    const state = twoSourceCase();
+    expect(
+      state.assumptions
+        .filter((item) => item.id.startsWith('A-SOURCE-'))
+        .every((item) => item.status === 'valid'),
+    ).toBe(true);
+  });
+});
