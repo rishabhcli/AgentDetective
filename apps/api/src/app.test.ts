@@ -564,6 +564,36 @@ describe('THREAD API', () => {
       ).toHaveLength(1);
     });
 
+    it('returns exactly the persisted case when an upload duplicates an artifact', async () => {
+      const app = createApp({
+        store,
+        environment: {},
+        uploadDirectory: join(directory, 'uploads'),
+      });
+      const caseId = await newCase(app, 'Duplicate');
+      const content = 'Camera 4: Dana Reyes entered Warehouse A on 2026-08-04T21:06:00Z.';
+      await upload(app, caseId, 'log.txt', content);
+      // A duplicate creates nothing, so it answers 200 rather than 201.
+      const second = await request(app)
+        .post(`/api/cases/${caseId}/evidence`)
+        .field('title', 'log.txt')
+        .field('sourceLabel', 'Uploaded by investigator')
+        .field('kind', 'access-log')
+        .field('sourceReliability', 'B')
+        .field('informationCredibility', '2')
+        .attach('file', Buffer.from(content), {
+          filename: 'log.txt',
+          contentType: 'text/plain',
+        })
+        .expect(200);
+
+      expect(second.body.receipt.outcome).toBe('duplicate');
+      // A duplicate persists nothing, so the response must not carry derived
+      // structure the store never saw.
+      const persisted = await request(app).get(`/api/cases/${caseId}`).expect(200);
+      expect(second.body.state).toEqual(persisted.body.state);
+    });
+
     it('re-derives without changing anything the second time', async () => {
       const app = createApp({
         store,

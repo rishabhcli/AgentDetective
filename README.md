@@ -19,6 +19,14 @@ development system. Two bundled cases make the evidence boundary explicit:
 
 ## What is concrete today
 
+- **a general derivation engine**: open a case with nothing in it, put ordinary
+  files into it, and get participants, provenance-bound relationships,
+  contradictions, competing accounts, and questions ranked by expected
+  information gain — with no fixture involved. Every derived relationship names
+  the assumption its derivation required, and any of those assumptions can be
+  invalidated to watch the case restructure through the same ATMS machinery.
+  Times are read only from what sources already carry: a bare clock with no date
+  to anchor it stays unset rather than inventing a day
 - one zoomable evidence canvas projected from normalized Evidence, World, and
   Belief state; the board opens locked, can be explicitly unlocked for freeform
   move/resize, and persists one layout per case
@@ -168,9 +176,38 @@ apps/web       React/Vite kinetic landing, React Flow evidence canvas,
 apps/api       Express, provider hub, multimodal ingestion, Atlas store,
                bounded retrieval, LangGraph orchestration
 packages/domain
-               shared types, deterministic reasoning, synthetic and real-redacted cases
+               shared types, deterministic reasoning, the general derivation
+               engine, synthetic and real-redacted cases
 compose.yaml   pinned Atlas Local image, loopback port, durable volumes
 ```
+
+### The derivation engine
+
+`packages/domain/src/inference.ts` is what lets THREAD work on a case it has
+never seen. It is pure: state in, proposed structure out, nothing persisted and
+nothing mutated in place.
+
+```text
+observations + claims
+  → mentions          surface forms bound to the record and locator that said them
+  → entities          clustered without hard merges; vague forms stay unresolved
+  → time              intervals read only from timestamps the sources carry
+  → relationships     provenance-bound, each naming the assumption it required
+  → contradictions    overlapping placements, impossible transits, direct denials
+  → explanations      the competing accounts that would dissolve a conflict
+  → reconstructions   every statement labeled by the support it actually has
+  → questions         ordered by expected information gain
+```
+
+Each stage returns a report — completed, skipped with its reason, or failed —
+and the run ledger is built from those reports rather than written by hand at
+the call site. `assessDerivation` then grades the finished pass and names its
+weakest points by exposure.
+
+The engine is deliberately restrained. An empty case derives an empty graph, a
+thin case derives a visibly thin one with its silences named, and a stage with
+nothing to do says so. Fabricating structure is treated as a worse failure than
+producing none.
 
 ### Persistent model
 

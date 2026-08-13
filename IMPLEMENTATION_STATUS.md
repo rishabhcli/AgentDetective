@@ -5,7 +5,75 @@ Updated: 2026-08-13 (local development machine)
 This is an evidence-bound handoff, not a feature wish list. “Live” means the
 capability was exercised on this machine; it does not prove public deployment.
 
-## Implemented and exercised
+## The general derivation engine (added 2026-08-13, later session)
+
+THREAD previously reasoned about exactly one case. Entities, relationships,
+competing accounts and ranked questions existed only inside the hand-authored
+Badge 17 fixture: `investigateAnomaly` branched on the literal anomaly `AN-J`,
+`applyCounterEvidence` was a scripted transition over `EV-143`/`A-19`/`R-A`/`R-C`,
+and `ingestLocalEvidence` ended by recording that no entity, event or world edge
+had been created. A new case stayed an empty graph.
+
+`packages/domain/src/inference.ts` is a pure deriving layer that closes that
+gap. Exercised on this machine:
+
+| Capability               | Evidence boundary                                                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mention extraction       | Speakers, capitalized name runs, identifier shapes and locative phrases read from arbitrary observations and claims, each bound to the record and locator that produced it |
+| Identity resolution      | Mentions clustered without hard merges; vague forms stay unresolved; a partial name becomes candidate bindings with open-world mass reserved                               |
+| Temporal placement       | Intervals read from timestamps sources already carry, including a leading timestamp that line-level quoting drops; a bare clock with no date anchor stays null             |
+| Relationship derivation  | Co-occurrence turned into provenance-bound edges; testimony scored through its Admiralty rating; every edge carries an explicit assumption naming its leap                 |
+| Contradiction detection  | Overlapping placements, placements too close to travel between under a stated transit warrant, and one artifact denying another                                            |
+| Abduction                | A contradiction answered with the competing explanations that would dissolve it; none selected                                                                             |
+| Reconstruction           | Competing accounts whose every statement carries a support label computed from its own sources                                                                             |
+| Question ranking         | Anomalies ordered by expected information gain over the live distribution                                                                                                  |
+| Stage reporting + critic | One report per agent (completed / skipped with reason / failed) driving the run ledger, plus `assessDerivation` grading the pass by exposure                               |
+| General investigation    | `Investigate` rescores identities, weighs contradictions by corroboration, and searches for corroboration of lone relationships — recording refusals as results            |
+| General cascade          | `challengeAssumption` invalidates any warrant in any case and propagates through ATMS environments, dependent edges and derived accounts                                   |
+| Case lifecycle           | `POST /api/cases`, `DELETE /api/cases/:caseId` (bundled fixtures refused), `POST /api/cases/:caseId/infer`, and the web controls for all three                             |
+| Browser proof            | `tests/newcase.spec.ts` opens an empty case, preserves ordinary text files, and asserts participants, relationships, contradictions, competing accounts and the cascade    |
+
+Test counts after this work: 133 domain, 30 API, 1 web component, and 73
+passing Playwright checks (5 skipped, all provider-gated) including four new
+specs that involve no fixture.
+
+### What this session did _not_ exercise
+
+This matters more than the table above. **No `.env` and no Atlas container were
+present during this work, so every run above used the credential-free JSON
+store.** Specifically not exercised here:
+
+- `MongoCaseStore.deleteCase` is written but never run.
+- LangGraph checkpointing never ran; without `MONGODB_URI` the orchestrator
+  returns an uncheckpointed run with a null checkpoint ID, which is the path
+  these runs took.
+- `$rankFusion` / `$vectorSearch` retrieval never ran; every packet in these
+  runs came from the bounded lexical fallback.
+- No provider (Fireworks, OpenRouter, ElevenLabs, Aside) was contacted.
+
+The Atlas, embedding, rank-fusion and provider rows in the older table below
+were verified in an earlier session and **predate the derivation engine**. They
+should be re-run against Atlas before any of them is described as current.
+
+No new top-level `CaseState` array was introduced, so `collectionMap` and
+`normalizeCaseState` need no migration; the derived records land in arrays that
+already persist.
+
+### Known bounds of the derivation itself
+
+- Mention extraction is lexical and English-shaped. It reads capitalized name
+  runs, corporate suffixes, locative prepositions and identifier shapes. It does
+  not do morphology, coreference across records, or non-Latin scripts.
+- The transit warrant that lets two near-simultaneous placements conflict is a
+  stated assumption, not a measurement: the engine holds no map and cannot prove
+  two locations are far apart. It is attached to every conflict resting on it so
+  it can be invalidated.
+- A pass is bounded by record count and degrades to a recorded sample rather
+  than doing quadratic work. The bound taken appears in the audit trail.
+- Authored reconstructions are never overwritten by derivation, so the Badge 17
+  fixture keeps its curated accounts.
+
+## Implemented and exercised (earlier sessions)
 
 | Area                         | Evidence boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

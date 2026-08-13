@@ -1329,27 +1329,33 @@ const TRANSIT_ASSUMPTION_ID = 'A-LEAP-TRANSIT';
  */
 export function detectContradictions(
   state: CaseState,
-  options: { transitWindowSeconds?: number } = {},
+  options: { transitWindowSeconds?: number; maxComparisons?: number } = {},
 ): ContradictionResult {
   const transitWindowSeconds =
     options.transitWindowSeconds ?? DEFAULT_TRANSIT_WINDOW_SECONDS;
+  // Both scans are pairwise. On a large case that is quadratic, so each one is
+  // bounded and stops rather than doing unbounded work.
+  const maxComparisons = options.maxComparisons ?? 50_000;
   const beliefs: Belief[] = [];
   const disputed = new Set<string>();
   let usedTransitWarrant = false;
+  let comparisons = 0;
   const labelOf = (entityId: string): string =>
     state.entities.find((entity) => entity.id === entityId)?.label ?? entityId;
 
   const placements = state.worldEdges.filter(
     (edge) => edge.predicate === 'OBSERVED_AT' && edge.validTime !== null,
   );
-  for (let left = 0; left < placements.length; left += 1) {
+  placementScan: for (let left = 0; left < placements.length; left += 1) {
     for (let right = left + 1; right < placements.length; right += 1) {
+      if (comparisons >= maxComparisons) break placementScan;
       const a = placements[left];
       const b = placements[right];
       if (!a || !b) continue;
       if (a.subjectId !== b.subjectId) continue;
       if (a.objectId === b.objectId) continue;
       if (!a.validTime || !b.validTime) continue;
+      comparisons += 1;
 
       let relation: string;
       try {
@@ -1422,21 +1428,27 @@ export function detectContradictions(
     }
   }
 
-  const claims = state.claims;
-  for (let left = 0; left < claims.length; left += 1) {
-    for (let right = left + 1; right < claims.length; right += 1) {
-      const a = claims[left];
-      const b = claims[right];
-      if (!a || !b) continue;
+  // Tokenizing inside a pairwise loop costs O(n^2) scans of the same text, so
+  // each claim is read once. A denial can only conflict with an assertion, so
+  // the two sides are compared across rather than within.
+  const analyzed = state.claims.map((item) => ({
+    claim: item,
+    negated: hasNegation(item.verbatim),
+    tokens: contentTokens(item.verbatim),
+  }));
+  const negated = analyzed.filter((item) => item.negated && item.tokens.size >= 2);
+  const asserted = analyzed.filter((item) => !item.negated && item.tokens.size >= 2);
+
+  claimScan: for (const denial of negated) {
+    for (const assertion of asserted) {
+      if (comparisons >= maxComparisons) break claimScan;
+      comparisons += 1;
+      const a = denial.claim;
+      const b = assertion.claim;
       // One source restating itself is repetition, not conflict.
       if (a.speaker !== null && a.speaker === b.speaker) continue;
       if (a.sourceEvidenceId === b.sourceEvidenceId) continue;
-      if (hasNegation(a.verbatim) === hasNegation(b.verbatim)) continue;
-
-      const tokensA = contentTokens(a.verbatim);
-      const tokensB = contentTokens(b.verbatim);
-      if (tokensA.size < 2 || tokensB.size < 2) continue;
-      if (jaccard(tokensA, tokensB) < 0.8) continue;
+      if (jaccard(denial.tokens, assertion.tokens) < 0.8) continue;
 
       const [first, second] = a.id <= b.id ? [a, b] : [b, a];
       beliefs.push({

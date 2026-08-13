@@ -52,6 +52,18 @@ or agent run.
   `PARTIALLY_SUPPORTED`, `INFERRED`, `DISPUTED`, or `UNKNOWN`.
 - Never output or imply a guilt verdict. This is decision support, not
   admissible evidence.
+- **Derived structure declares itself.** Anything the engine infers rather than
+  reads carries an explicit `Assumption` naming the leap the derivation took,
+  and that assumption can be invalidated. A derived relationship is never
+  dressed up as an observed one.
+- **Silence is a result.** A case with thin evidence must produce a visibly thin
+  graph with its gaps named. A stage with nothing to do reports that it was
+  skipped and why. Producing confident-looking structure the evidence does not
+  carry is a worse failure than producing none.
+- **The ledger is the report, not a narration of it.** Each derivation stage
+  states what it did; run steps are built from those statements. Never
+  hand-write step prose at a call site — it drifts from the work and becomes a
+  lie about it.
 
 ## Repository shape
 
@@ -60,7 +72,8 @@ apps/
   api/       HTTP API, storage adapters, ingestion endpoints
   web/       React investigation workspace
 packages/
-  domain/    shared case types, deterministic reasoning, sample case
+  domain/    shared case types, deterministic reasoning, the general
+             derivation engine (inference.ts), sample case
 tests/       end-to-end and repository-level checks
 ```
 

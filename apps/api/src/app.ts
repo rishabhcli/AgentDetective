@@ -1847,20 +1847,24 @@ export function createApp({
       result.auditSteps.push(
         ...extraction.warnings.map((warning) => `WARNING · ${warning}`),
       );
-      // Preserving an artifact is not the same as understanding it. The
-      // derivation pass is what turns the preserved record into entities,
-      // relationships, contradictions and ranked questions.
-      const inference = runInferencePass(result.state, {
-        ...(result.revision ? { timestamp: result.revision.createdAt } : {}),
-        // Only the newly preserved artifact is read for mentions and
-        // relationships; case-wide stages still judge it against everything.
-        ...(result.revision?.triggerEvidenceId
-          ? { evidenceScope: [result.revision.triggerEvidenceId] }
-          : {}),
-      });
-      result.state = inference.state;
-      result.auditSteps.push(...inference.auditSteps);
       if (result.revision) {
+        // Preserving an artifact is not the same as understanding it. The
+        // derivation pass is what turns the preserved record into entities,
+        // relationships, contradictions and ranked questions.
+        //
+        // It runs only when something was actually preserved. A duplicate
+        // persists nothing, so deriving over it would both do the work twice
+        // and hand the client structure the store never saw.
+        const inference = runInferencePass(result.state, {
+          timestamp: result.revision.createdAt,
+          // Only the newly preserved artifact is read for mentions and
+          // relationships; case-wide stages still judge it against everything.
+          ...(result.revision.triggerEvidenceId
+            ? { evidenceScope: [result.revision.triggerEvidenceId] }
+            : {}),
+        });
+        result.state = inference.state;
+        result.auditSteps.push(...inference.auditSteps);
         await store.saveCase(result.state);
         const evidenceId = result.revision.triggerEvidenceId;
         const packet = await store.buildCasePacket(

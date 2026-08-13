@@ -81,7 +81,36 @@ state inline:
 New reasoning belongs in `reasoning.ts` as a pure, unit-tested function, not in
 a route handler.
 
-`deduction.ts` is a second, purely _derived_ layer over the same state:
+`inference.ts` is the **deriving** layer, and it is what makes THREAD work on a
+case it has never seen. `reasoning.ts` mutates state and `deduction.ts` only
+reads it; `inference.ts` sits between them, taking records that already carry
+provenance and proposing the structures a case needs. Its stages —
+`extractEntityMentions`, `resolveEntities`, `extractTemporalInterval`,
+`deriveTemporalConstraints`, `deriveWorldEdges`, `detectContradictions`,
+`abduceHypotheses`, `buildReconstructions`, `rankOpenQuestions` — are separately
+exported and separately testable, and `runInferencePass` composes them onto the
+same `MutationResult` contract the routes already consume. Three properties are
+load-bearing and have tests pinning them:
+
+- **It is scoped and additive.** `evidenceScope` limits which artifacts are read
+  for mentions and relationships, authored reconstructions are never replaced,
+  and existing questions are never dropped. Uploading into the Badge 17 fixture
+  must not rewrite it.
+- **It is idempotent.** A pass that derives nothing new returns
+  `revision === null`. `updatedAt` on an account means "when it last changed",
+  not "when it was last checked".
+- **It reports rather than narrates.** Each stage returns a
+  `DerivationStageReport` (`completed` / `skipped` with a reason / `failed`), and
+  routes build the run ledger from those reports. Do not hand-write step prose at
+  a call site — that is how the LINKER entry once claimed no relationship had
+  been promoted while the pass beside it was deriving them.
+
+`assessDerivation` grades a finished pass and names its weakest points by
+exposure. `challengeAssumption` is the general form of the scripted Evidence 143
+cascade: invalidate any warrant and everything resting on it falls through the
+same ATMS machinery.
+
+`deduction.ts` is a third, purely _derived_ layer over the same state:
 `buildDeductionChains`, `rankKeystoneAssumptions` and `findEvidentialSilences`
 read `CaseState` and return analysis without persisting anything. Because they
 are pure and take state as input, the web app calls them directly — they need no

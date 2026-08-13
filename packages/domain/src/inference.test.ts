@@ -1930,3 +1930,75 @@ describe('assessDerivation', () => {
     expect(exposure).toEqual([...exposure].sort((a, b) => b - a));
   });
 });
+
+describe('detectContradictions at scale', () => {
+  it('still finds a planted denial among many unrelated claims', () => {
+    const state = createEmptyCase({ id: 'case-scale', title: 'Scale' });
+    for (let index = 0; index < 400; index += 1) {
+      state.claims.push(
+        claim({
+          id: `C-${index}`,
+          speaker: `Witness ${index}`,
+          verbatim: `Pallet ${index} was moved to bay ${index}.`,
+          sourceEvidenceId: `EV-${index}`,
+        }),
+      );
+    }
+    state.claims.push(
+      claim({
+        id: 'C-A',
+        speaker: 'Marcus Webb',
+        verbatim: 'Dana Reyes was at the gate.',
+        sourceEvidenceId: 'EV-A',
+      }),
+      claim({
+        id: 'C-B',
+        speaker: 'Ruth Sandoval',
+        verbatim: 'Dana Reyes was not at the gate.',
+        sourceEvidenceId: 'EV-B',
+      }),
+    );
+
+    const started = Date.now();
+    const result = detectContradictions(state);
+    // A quadratic tokenizing scan over 400 claims would not return promptly.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.beliefs.some((belief) => belief.sourceIds.includes('C-A'))).toBe(true);
+  });
+
+  it('bounds placement comparison on a case with many timed placements', () => {
+    const state = createEmptyCase({ id: 'case-placements', title: 'Placements' });
+    for (let index = 0; index < 300; index += 1) {
+      state.worldEdges.push({
+        id: `WE-${index}`,
+        caseId: 'case-placements',
+        subjectId: 'E-DANA',
+        predicate: 'OBSERVED_AT',
+        objectId: `E-PLACE-${index}`,
+        confidence: 0.5,
+        sourceClaimIds: [],
+        sourceObservationIds: [],
+        contributions: [],
+        validTime: {
+          earliest: `2026-08-04T21:00:00.000Z`,
+          latest: `2026-08-04T21:30:00.000Z`,
+          precision: 'minute',
+          confidence: 0.9,
+        },
+        transactionTime: '2026-01-01T00:00:00.000Z',
+        disputed: false,
+        alternatives: [],
+        createdByAgent: 'linker',
+        assumptionIds: [],
+        lenses: ['place'],
+      });
+    }
+
+    const started = Date.now();
+    const result = detectContradictions(state, { maxComparisons: 500 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.beliefs.length).toBeGreaterThan(0);
+    // The bound is honoured rather than silently exceeded.
+    expect(result.beliefs.length).toBeLessThanOrEqual(500);
+  });
+});
