@@ -1,0 +1,31 @@
+name: thread-local
+
+services:
+  atlas:
+    # Official Atlas Local image. The manifest digest is multi-architecture and
+    # pins the verified MongoDB 8.3.4 / Community mongot 1.70.1 build.
+    image: mongodb/mongodb-atlas-local@sha256:bc895bd0f56b29fbe99bdf449c53e7977d92e6a3e1a8b62b70e71e2cde9d6d96
+    container_name: thread-atlas-local
+    hostname: atlas
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:27017:27017'
+    volumes:
+      - thread_atlas_db:/data/db
+      - thread_atlas_config:/data/configdb
+      - thread_atlas_search:/data/mongot
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "mongosh --quiet --eval 'quit(db.runCommand({ ping: 1 }).ok ? 0 : 2)' mongodb://127.0.0.1:27017/admin",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  thread_atlas_db:
+  thread_atlas_config:
+  thread_atlas_search:
