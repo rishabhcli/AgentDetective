@@ -1,0 +1,92 @@
+name: THREAD CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thread-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Types, tests, integrity, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: thread-production-bundles
+          path: |
+            apps/api/dist
+            apps/web/dist
+            packages/domain/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  atlas-e2e:
+    name: Atlas Local and browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm atlas:up
+      - run: pnpm atlas:check
+      - name: Start THREAD against Atlas Local
+        env:
+          MONGODB_URI: mongodb://127.0.0.1:27017/?directConnection=true
+          MONGODB_DATABASE: thread_ci
+          THREAD_DATA_DIR: .thread-data-ci
+          THREAD_MODEL_CACHE: .thread-cache
+        run: |
+          pnpm dev > /tmp/thread-dev.log 2>&1 &
+          echo $! > /tmp/thread-dev.pid
+          for attempt in $(seq 1 120); do
+            curl --fail --silent http://127.0.0.1:8787/api/health >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/thread-dev.log
+          exit 1
+      - name: Run browser flow against Atlas Local
+        run: pnpm test:e2e
+      - name: Check the live persisted snapshots
+        env:
+          THREAD_API_URL: http://127.0.0.1:8787
+        run: pnpm test:integrity
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+      - if: always()
+        run: test ! -f /tmp/thread-dev.pid || kill $(cat /tmp/thread-dev.pid) || true
+      - if: always()
+        run: pnpm atlas:down

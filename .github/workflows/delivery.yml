@@ -1,0 +1,43 @@
+name: THREAD delivery
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release-artifact:
+    name: Verified release artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:ci
+      - name: Package without secrets or local case data
+        run: |
+          mkdir -p release/thread
+          cp -R apps/api/dist release/thread/api
+          cp -R apps/web/dist release/thread/web
+          cp -R packages/domain/dist release/thread/domain
+          cp README.md LAUNCH_CHECKLIST.md release/thread/
+          tar -C release -czf thread-${GITHUB_SHA}.tar.gz thread
+          shasum -a 256 thread-${GITHUB_SHA}.tar.gz > thread-${GITHUB_SHA}.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: thread-${{ github.sha }}
+          path: |
+            thread-${{ github.sha }}.tar.gz
+            thread-${{ github.sha }}.sha256
+          if-no-files-found: error
+          retention-days: 30
