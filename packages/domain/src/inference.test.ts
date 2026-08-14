@@ -2244,3 +2244,111 @@ describe('source reliability as an attackable warrant', () => {
     ).toBe(true);
   });
 });
+
+describe('log-shaped sources', () => {
+  it('does not read a recording device as a person', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [
+        claim({
+          id: 'C-1',
+          speaker: 'Camera 4',
+          verbatim: 'Dana Reyes entered Warehouse A.',
+        }),
+      ],
+    );
+
+    const device = mentions.find((mention) => mention.surfaceForm === 'Camera 4');
+    expect(device?.kindProbabilities.device).toBeGreaterThan(
+      device?.kindProbabilities.person ?? 1,
+    );
+  });
+
+  it('still reads a named speaker as a person', () => {
+    const mentions = extractEntityMentions(
+      [],
+      [claim({ id: 'C-1', speaker: 'Ruth Sandoval', verbatim: 'The gate was locked.' })],
+    );
+
+    const speaker = mentions.find((mention) => mention.channel === 'speaker');
+    expect(speaker?.kindProbabilities.person).toBeGreaterThan(0.5);
+  });
+
+  it('leaves a single-source relationship legible rather than near-zero', () => {
+    // Five multiplied 0..1 factors collapse a plain, well-attested statement to
+    // a couple of percent, which reads as worthless instead of uncorroborated.
+    const state = createEmptyCase({ id: 'case-legible', title: 'Legible' });
+    state.claims.push(
+      claim({
+        id: 'C-1',
+        speaker: 'Ruth Sandoval',
+        verbatim: 'Dana Reyes entered Warehouse A.',
+        sourceEvidenceId: 'EV-1',
+        sourceReliability: 'B',
+        informationCredibility: 2,
+      }),
+    );
+
+    const result = runInferencePass(state, { timestamp: '2026-01-01T00:00:00.000Z' });
+    const edges = result.state.worldEdges;
+    expect(edges.length).toBeGreaterThan(0);
+    expect(Math.max(...edges.map((edge) => edge.confidence))).toBeGreaterThan(0.15);
+    // Still nowhere near certain: one artifact is one artifact.
+    expect(Math.max(...edges.map((edge) => edge.confidence))).toBeLessThan(0.7);
+  });
+});
+
+describe('a record speaker is attribution, not a participant', () => {
+  it('does not relate the speaker to the entities inside its own quotation', () => {
+    const claims = [
+      claim({
+        id: 'C-1',
+        speaker: 'Camera 4',
+        verbatim: 'Dana Reyes entered Warehouse A.',
+        sourceEvidenceId: 'EV-1',
+      }),
+    ];
+    const mentions = extractEntityMentions([], claims);
+    const result = deriveWorldEdges({
+      caseId: 'case-test',
+      observations: [],
+      claims,
+      entities: [
+        entity({ id: 'E-CAM', label: 'Camera 4', kind: 'device', confidence: 0.7 }),
+        entity({ id: 'E-DANA', label: 'Dana Reyes', kind: 'person', confidence: 0.7 }),
+        entity({ id: 'E-WH', label: 'Warehouse A', kind: 'location', confidence: 0.7 }),
+      ],
+      mentions,
+    });
+
+    // The camera recorded the statement; it did not meet anyone or go anywhere.
+    expect(
+      result.edges.some((edge) => edge.subjectId === 'E-CAM' || edge.objectId === 'E-CAM'),
+    ).toBe(false);
+    // What the statement actually says still stands.
+    expect(
+      result.edges.some((edge) => edge.subjectId === 'E-DANA' && edge.objectId === 'E-WH'),
+    ).toBe(true);
+  });
+});
+
+describe('entity description freshness', () => {
+  it('restates how an entity is supported when a later artifact adds to it', () => {
+    const first = resolveEntities(
+      [mention({ id: 'MEN-1', surfaceForm: 'Dana Reyes', sourceEvidenceId: 'EV-A' })],
+      [],
+      { caseId: 'case-test' },
+    );
+    expect(first.entities[0]?.description).toContain('1 artifact');
+
+    const second = resolveEntities(
+      [mention({ id: 'MEN-2', surfaceForm: 'Dana Reyes', sourceEvidenceId: 'EV-B' })],
+      first.entities,
+      { caseId: 'case-test' },
+    );
+
+    // The card must not still claim one artifact once a second one supports it.
+    expect(second.entities[0]?.sourceEvidenceIds).toHaveLength(2);
+    expect(second.entities[0]?.description).toContain('2 artifacts');
+  });
+});

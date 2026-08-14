@@ -156,6 +156,14 @@ const LEXICAL_STOPWORDS = new Set([
   'from',
 ]);
 
+/**
+ * Speaker labels that name a recording device rather than a person. Access and
+ * camera logs attribute every line to one of these, and reading them as people
+ * invents participants who then "meet" and "use" things.
+ */
+const DEVICE_SPEAKER =
+  /^(camera|cam|sensor|reader|scanner|terminal|door|gate|kiosk|unit|lane|channel|detector|panel|log|system)\b/iu;
+
 /** Tokens that may sit inside a name run without breaking it. */
 const RUN_CONNECTORS = new Set([
   'of',
@@ -669,7 +677,9 @@ export function extractEntityMentions(
               surfaceForm: speaker,
               start: -1,
               channel: 'speaker',
-              kindWeights: { person: 0.85, organization: 0.1, identity: 0.05 },
+              kindWeights: DEVICE_SPEAKER.test(speaker)
+                ? { device: 0.75, object: 0.15, person: 0.05, organization: 0.05 }
+                : { person: 0.85, organization: 0.1, identity: 0.05 },
               confidence: 0.9,
               vague: false,
             },
@@ -790,6 +800,10 @@ function preferredLabel(mentions: readonly EntityMention[]): string {
   return label;
 }
 
+function supportDescription(mentionCount: number, artifactCount: number): string {
+  return `Derived from ${mentionCount} mention${mentionCount === 1 ? '' : 's'} across ${artifactCount} artifact${artifactCount === 1 ? '' : 's'}.`;
+}
+
 interface MentionGroup {
   normalized: string;
   mentions: EntityMention[];
@@ -820,7 +834,10 @@ function entityConfidence(mentions: readonly EntityMention[]): number {
   const mean =
     mentions.reduce((sum, mention) => sum + mention.confidence, 0) / mentions.length;
   const artifacts = distinctEvidenceIds(mentions).length;
-  return round(Math.min(0.95, mean * (1 - 0.5 ** artifacts)), 2);
+  // Corroboration lifts an entity toward its mention quality rather than being
+  // the whole of its standing: a name stated plainly once is weak evidence, not
+  // almost no evidence.
+  return round(Math.min(0.95, mean * (0.6 + 0.4 * (1 - 0.5 ** artifacts))), 2);
 }
 
 /**
@@ -881,15 +898,19 @@ export function resolveEntities(
         record.sourceEvidenceIds = [
           ...new Set([...record.sourceEvidenceIds, ...distinctEvidenceIds(group.mentions)]),
         ];
-        record.properties = {
-          ...record.properties,
-          mentionIds: [
-            ...new Set([
-              ...(record.properties.mentionIds ?? []),
-              ...group.mentions.map((mention) => mention.id),
-            ]),
-          ],
-        };
+        const mentionIds = [
+          ...new Set([
+            ...(record.properties.mentionIds ?? []),
+            ...group.mentions.map((mention) => mention.id),
+          ]),
+        ];
+        record.properties = { ...record.properties, mentionIds };
+        // The description states how well supported the entity is, so it is
+        // restated as support arrives rather than frozen at first derivation.
+        record.description = supportDescription(
+          mentionIds.length,
+          record.sourceEvidenceIds.length,
+        );
         derivedByNormalized.set(group.normalized, record);
       }
       continue;
@@ -902,7 +923,10 @@ export function resolveEntities(
       kind: aggregateKind(group.mentions),
       label,
       shortLabel: tokensOf(label).length > 1 ? (label.split(' ')[0] ?? label) : label,
-      description: `Derived from ${group.mentions.length} mention${group.mentions.length === 1 ? '' : 's'} across ${distinctEvidenceIds(group.mentions).length} artifact${distinctEvidenceIds(group.mentions).length === 1 ? '' : 's'}.`,
+      description: supportDescription(
+        group.mentions.length,
+        distinctEvidenceIds(group.mentions).length,
+      ),
       aliases: [
         ...new Set(
           group.mentions
@@ -1168,6 +1192,13 @@ export function deriveWorldEdges(
         const b = resolved[right];
         if (!a || !b) continue;
         if (a.entity.id === b.entity.id) continue;
+        // The speaker is who the record is attributed to, not a participant in
+        // what the record says. A camera that logged a line did not meet the
+        // person in it, and a witness describing a scene is making a claim
+        // about it rather than standing in a relationship with everyone named.
+        if (a.mention.channel === 'speaker' || b.mention.channel === 'speaker') {
+          continue;
+        }
 
         const aRank = KIND_RANK[a.entity.kind];
         const bRank = KIND_RANK[b.entity.kind];
@@ -1182,15 +1213,22 @@ export function deriveWorldEdges(
         if (a.mention.channel === 'coreference' || b.mention.channel === 'coreference') {
           pairLeaps.push('coreference');
         }
+        // The geometric mean of the factors, not their product. Multiplying
+        // five independent 0..1 confidences drives every derived relationship
+        // to a couple of percent, which reads as "worthless" rather than
+        // "single-source". The mean still lets one weak link pull the whole
+        // chain down; it just does not annihilate it.
+        const factors = [
+          base,
+          a.mention.confidence,
+          b.mention.confidence,
+          subjectSide.entity.confidence,
+          objectSide.entity.confidence,
+        ].map((value) => Math.max(value, 0.01));
+        const chain =
+          factors.reduce((product, value) => product * value, 1) ** (1 / factors.length);
         const support = round(
-          pairLeaps.reduce(
-            (value, kind) => value * LEAPS[kind].discount,
-            base *
-              a.mention.confidence *
-              b.mention.confidence *
-              subjectSide.entity.confidence *
-              objectSide.entity.confidence,
-          ),
+          pairLeaps.reduce((value, kind) => value * LEAPS[kind].discount, chain),
           4,
         );
 
