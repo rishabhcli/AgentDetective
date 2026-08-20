@@ -16,7 +16,7 @@ importers:
         version: 1.62.1
       concurrently:
         specifier: latest
-        version: 10.0.4
+        version: 10.0.5
       eslint:
         specifier: latest
         version: 10.8.1(supports-color@10.2.2)
@@ -48,17 +48,17 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@langchain/core':
-        specifier: ^1.2.5
-        version: 1.2.5
+        specifier: ^1.2.8
+        version: 1.2.8
       '@langchain/langgraph':
-        specifier: ^1.4.9
-        version: 1.4.9(@langchain/core@1.2.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^1.4.10
+        version: 1.4.10(@langchain/core@1.2.8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
       '@langchain/langgraph-checkpoint-mongodb':
         specifier: ^1.4.0
-        version: 1.4.0(@langchain/core@1.2.5)(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.5))
+        version: 1.4.0(@langchain/core@1.2.8)(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.8))
       '@langchain/mongodb':
         specifier: ^1.3.0
-        version: 1.3.0(@langchain/core@1.2.5)
+        version: 1.3.0(@langchain/core@1.2.8)
       '@thread/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -87,8 +87,8 @@ importers:
         specifier: ^1.12.1
         version: 1.12.1
       mongodb:
-        specifier: 6.21.0
-        version: 6.21.0
+        specifier: 7.5.0
+        version: 7.5.0
       multer:
         specifier: latest
         version: 2.2.0
@@ -142,8 +142,8 @@ importers:
   apps/web:
     dependencies:
       '@elevenlabs/react':
-        specifier: ^1.12.0
-        version: 1.12.0(@types/dom-mediacapture-record@1.0.22)(react@19.2.8)
+        specifier: ^1.12.3
+        version: 1.12.3(@types/dom-mediacapture-record@1.0.22)(react@19.2.8)
       '@fontsource/ibm-plex-mono':
         specifier: latest
         version: 5.3.0
@@ -188,7 +188,7 @@ importers:
         version: 8.0.5(uuid@14.0.1)(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1))
       vis-timeline:
         specifier: latest
-        version: 8.5.3(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)(keycharm@0.4.0)(moment@2.30.1)(propagating-hammerjs@3.0.0(@egjs/hammerjs@2.0.17))(uuid@14.0.1)(vis-data@8.0.5(uuid@14.0.1)(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)))(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1))(xss@1.0.15)
+        version: 8.5.4(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)(keycharm@0.4.0)(moment@2.30.1)(propagating-hammerjs@3.0.0(@egjs/hammerjs@2.0.17))(uuid@14.0.1)(vis-data@8.0.5(uuid@14.0.1)(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)))(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1))(xss@1.0.15)
     devDependencies:
       '@testing-library/jest-dom':
         specifier: latest
@@ -364,16 +364,16 @@ packages:
     resolution: {integrity: sha512-XQsZgjm2EcVUiZQf11UBJQfmZeEmOW8DpI1gsFeln6w0ae0ii4dMQEQ0kjl6DspdWX1aGY1/loyXnP0JS06e/A==}
     engines: {node: '>=0.8.0'}
 
-  '@elevenlabs/client@1.17.0':
-    resolution: {integrity: sha512-TcFF3KlfuI/ol1yrl6OXfFopCJ1+B8EHtEmx1k4XTNduqnucwTM5u61AtCGBskWUVxdCaYzNXWysEqMvEhXIgQ==}
+  '@elevenlabs/client@1.19.1':
+    resolution: {integrity: sha512-AROpUfPVHIvaACCR5N4z8shv+IuSLfkSw+m/pbWn22O+dDTBMVrCu/rvlp1dXiUHCd0ZJdRVmRzgPhmUHi+juA==}
 
-  '@elevenlabs/react@1.12.0':
-    resolution: {integrity: sha512-Cp/Mzla6IWnPH5VjWUSyjTT2VW9It26Cwpn6dJ5PXcZ+6uddh5qVLuI+S6sE7oOMd4kLC+HC4MRd6FZ8VQHeOg==}
+  '@elevenlabs/react@1.12.3':
+    resolution: {integrity: sha512-6uU+DKp+5Vov0qcq7bZWe5DnxZ9BmSyaAlSUK4farGgP3umb91ioyNhap4UIlS8pUHcqtTjSJaxpsR/zfSO67A==}
     peerDependencies:
       react: '>=16.8.0'
 
-  '@elevenlabs/types@0.19.0':
-    resolution: {integrity: sha512-CjaWT0Q4CWJPFbYrTSxzkW2NwUb9Z88m1hWL+7R07YZSp444OGl70/u1U/7fS3gjkeG/RgadzipDrhXYTZ5SAw==}
+  '@elevenlabs/types@0.21.0':
+    resolution: {integrity: sha512-zQ5eMUYyK1sf3nQf7vcmeRk94rMdSV67Oaam52EAkntmD1CYLmYQrfhnhekKZGIMb/w9yYhdEM40Lp+gORA27w==}
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -946,8 +946,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@langchain/core@1.2.5':
-    resolution: {integrity: sha512-4lXj3fTPQYGdEtOG9gWDnvmp6wpXNMo9MmWzfZxxPUxMcjulZJa93pYAZ90luFLg2YVdVuUl2tuwdD7tY5K9MA==}
+  '@langchain/core@1.2.8':
+    resolution: {integrity: sha512-ppi2UaCYKqM4LEY8NWQ/JZ0Of0MAngHRvclceVeEQklcD/M6QKanlHPWblDnLO2m4vz7987b1Z4r33Ps6lf/ig==}
     engines: {node: '>=20'}
 
   '@langchain/langgraph-checkpoint-mongodb@1.4.0':
@@ -981,8 +981,8 @@ packages:
       vue:
         optional: true
 
-  '@langchain/langgraph@1.4.9':
-    resolution: {integrity: sha512-EvD9rS66Cya09y6rbMgD3Ir8miAkJQFo7FyJOPRPO736Kz3y5TeyeBDOS8ctff/jRc788bPijHx2NVFM79Qqig==}
+  '@langchain/langgraph@1.4.10':
+    resolution: {integrity: sha512-QBNbbIWDp3pcyvaINGEYHdekGYSQm6ZYuC9/h7arEAZckAl5mRLaoRGw5t61V4Bf+rspEj2VcylqNAN3fcdBNQ==}
     engines: {node: '>=18'}
     peerDependencies:
       '@langchain/core': ^1.1.48
@@ -1000,8 +1000,8 @@ packages:
   '@livekit/mutex@1.1.1':
     resolution: {integrity: sha512-EsshAucklmpuUAfkABPxJNhzj9v2sG7JuzFDL4ML1oJQSV14sqrpTYnsaOudMAw9yOaW53NU3QQTlUQoRs4czw==}
 
-  '@livekit/protocol@1.42.2':
-    resolution: {integrity: sha512-0jeCwoMJKcwsZICg5S6RZM4xhJoF78qMvQELjACJQn6/VB+jmiySQKOSELTXvPBVafHfEbMlqxUw2UR1jTXs2g==}
+  '@livekit/protocol@1.50.4':
+    resolution: {integrity: sha512-L1uggNQAqyY21smQY8AllyOYbcv9Me9TaxwuLytL1R8ck9nbYPmQLNwEDi3pOFGAMa5F8I2nUi2Jc59W5awxlA==}
 
   '@mongodb-js/saslprep@1.4.13':
     resolution: {integrity: sha512-E3Sv4eCYAlKYUTx8S3ioQcDUscOif+8zZ5OnW1IzJ+Tt+EO+ke8mn+Y3FX6N1H79picwbdOavVOb1jPi2EOyrg==}
@@ -1506,6 +1506,9 @@ packages:
   '@types/whatwg-url@11.0.5':
     resolution: {integrity: sha512-coYR071JRaHa+xoEvvYqvnIHaVqaYrLPbsufM9BF63HkwI5Lgmy2QR8Q5K/lYDYo5AK82wOvSOS0UsLTpTG7uQ==}
 
+  '@types/whatwg-url@13.0.0':
+    resolution: {integrity: sha512-N8WXpbE6Wgri7KUSvrmQcqrMllKZ9uxkYWMt+mCSGwNc0Hsw9VQTW7ApqI4XNrx6/SaM2QQJCzMPDEXE058s+Q==}
+
   '@typescript-eslint/eslint-plugin@8.67.0':
     resolution: {integrity: sha512-Un7Heoyj65NREbKAyIrFxeM143NZpExWmy1Nep4DLeQOeLlTeumPjoNKnBrU5D5moWXbPJgRa5Uwcdu0faVNGQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
@@ -1739,6 +1742,10 @@ packages:
     resolution: {integrity: sha512-WIsKqkSC0ABoBJuT1LEX+2HEvNmNKKgnTAyd0fL8qzK4SH2i9NXg+t08YtdZp/V9IZ33cxe3iV4yM0qg8lMQng==}
     engines: {node: '>=16.20.1'}
 
+  bson@7.3.2:
+    resolution: {integrity: sha512-1w0ra+ho1cuE+w8jzwgzTFIimFtCfZeCoOsvIPQg6uyFCsp8M29U7bNNf5GrFh88TXbYg1g3TyKUGpd6O7q6zA==}
+    engines: {node: '>=20.19.0'}
+
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
 
@@ -1808,8 +1815,8 @@ packages:
     resolution: {integrity: sha512-MWufYdFw53ccGjCA+Ol7XJYpAlW6/prSMzuPOTRnJGcGzuhLn4Scrz7qf6o8bROZ514ltazcIFJZevcfbo0x7A==}
     engines: {'0': node >= 6.0}
 
-  concurrently@10.0.4:
-    resolution: {integrity: sha512-trZql+7l/0+WRAsAnEdctr4+iiOS6ZrViI6H8QWcCF9MFS/LT0dKpe8vluB1to6it+OxSI4VospFTIFMW8DJRw==}
+  concurrently@10.0.5:
+    resolution: {integrity: sha512-JaP/CoftUrCcAFW/g//RbgEGwlelnEae6cfBLgH6ZdO6s8jPkn6p9SB9u6pdVxYXoiSnFqseOlHfrEfF82TVOg==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -2389,8 +2396,8 @@ packages:
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
-  jose@6.2.8:
-    resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
+  jose@6.2.9:
+    resolution: {integrity: sha512-XrchZOFZUl/T3vTwRe8XK+cJrGtMF4th1ARnDfwbBXFKThGhlsxEE4Zu03AD/bjJSt/9jT/mxrOCkJWOg77aPA==}
 
   joycon@3.1.1:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
@@ -2442,8 +2449,8 @@ packages:
   keyv@4.5.4:
     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
 
-  langsmith@0.8.10:
-    resolution: {integrity: sha512-OG07MX2vyWcLyx/RhXPcydZVpuJSmCrcI1PxVmOR7TOoGWnGV68yUIaA85kc9v0gBkyD6cWa2VnBNBZcTN/qcQ==}
+  langsmith@0.8.11:
+    resolution: {integrity: sha512-dNKtyEiNS6L10qsRGKExQVHoMsRGBJt+xiBHn6G8JxslapedUhXVkvcDkhi00EuiIMeil+RevAVG8k6VM0B9ew==}
     peerDependencies:
       '@opentelemetry/api': '*'
       '@opentelemetry/exporter-trace-otlp-proto': '*'
@@ -2565,8 +2572,8 @@ packages:
   linkify-it@5.0.2:
     resolution: {integrity: sha512-ONTm2jCMAVZjgQa/Fy1kScXsuOoF5NPTsoFBdE1KVIZ2vAh/r9+Bqo+0jINCBYnavTPQZz38QzFTme79ENoN3Q==}
 
-  livekit-client@2.16.1:
-    resolution: {integrity: sha512-PmOHiGdkzw2P/t0vLbJRwHU59+T+JcFlGTYDV7PObWmzvypIij1Vlj0WhZKDZ/Ac7CvwWinbiGCVw/Pb/OiYYw==}
+  livekit-client@2.22.0:
+    resolution: {integrity: sha512-GLtYQfRh/RsvXaOX1x609bFZ17yyKmKWDqu9JmkMKn9vIFLi2GsapRv9gT8OJO/1R2dsitrkbGmloyUfxWQsaA==}
     peerDependencies:
       '@types/dom-mediacapture-record': ^1
 
@@ -2693,6 +2700,10 @@ packages:
   mongodb-connection-string-url@3.0.2:
     resolution: {integrity: sha512-rMO7CGo/9BFwyZABcKAWL8UJwH/Kc2x0g72uhDWzG48URRax5TCIcJ7Rc3RZqffZzO/Gwff/jyKwCU9TN8gehA==}
 
+  mongodb-connection-string-url@7.0.2:
+    resolution: {integrity: sha512-ZoS07RoFqpKYQwAk59qmrx8+jJHNHU30UjlU96QktiGn1ltvDr+vCznLX5DiUBLEpMAHatHNWV1nM/74ul66kA==}
+    engines: {node: '>=20.19.0'}
+
   mongodb@6.21.0:
     resolution: {integrity: sha512-URyb/VXMjJ4da46OeSXg+puO39XH9DeQpWCslifrRn9JWugy0D+DvvBvkm2WxmHe61O/H19JM66p1z7RHVkZ6A==}
     engines: {node: '>=16.20.1'}
@@ -2704,6 +2715,33 @@ packages:
       mongodb-client-encryption: '>=6.0.0 <7'
       snappy: ^7.3.2
       socks: ^2.7.1
+    peerDependenciesMeta:
+      '@aws-sdk/credential-providers':
+        optional: true
+      '@mongodb-js/zstd':
+        optional: true
+      gcp-metadata:
+        optional: true
+      kerberos:
+        optional: true
+      mongodb-client-encryption:
+        optional: true
+      snappy:
+        optional: true
+      socks:
+        optional: true
+
+  mongodb@7.5.0:
+    resolution: {integrity: sha512-5FnrEDLnvp6ycUOGLNLLU33BfCx2qmp2mJjGPDwKLruYsVzXVSK5fsGpoDXvsXJwBfBsD7ebMRdawbDxC2814g==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      '@aws-sdk/credential-providers': ^3.806.0
+      '@mongodb-js/zstd': ^7.0.0
+      gcp-metadata: ^7.0.1
+      kerberos: ^7.0.0
+      mongodb-client-encryption: ^7.2.0
+      snappy: ^7.3.2
+      socks: ^2.8.6
     peerDependenciesMeta:
       '@aws-sdk/credential-providers':
         optional: true
@@ -3288,9 +3326,6 @@ packages:
     peerDependencies:
       typescript: '>=4.8.4'
 
-  ts-debounce@4.0.0:
-    resolution: {integrity: sha512-+1iDGY6NmOGidq7i7xZGA4cm8DAa6fqdYcvO5Z6yBevH++Bdo9Qt/mN0TzHUgcCcKv1gmh9+W5dHqz8pMWbCbg==}
-
   ts-interface-checker@0.1.13:
     resolution: {integrity: sha512-Y/arvbn+rrz3JCKl9C4kVNfTfSm2/mEp5FSz5EsZSANGPSlQrpRI5M4PKF+mJnE52jOO90PnPSc3Ur3bTQw0gA==}
 
@@ -3410,8 +3445,8 @@ packages:
       uuid: ^3.4.0 || ^7.0.0 || ^8.0.0 || ^9.0.0 || ^10.0.0 || ^11.0.0 || ^13.0.0 || ^14.0.0
       vis-util: '>=6.0.0'
 
-  vis-timeline@8.5.3:
-    resolution: {integrity: sha512-o6BwGVVI+LEcoDPeaTWDKabnNInf3HDEHWdI8e8IoHIPBgbTLrcjf0PCyitFVP4gPFG2NQEjzIQIcWqN3RPyQQ==}
+  vis-timeline@8.5.4:
+    resolution: {integrity: sha512-Xt7RNrRvOkQiSyk6vFTXSRwTunT0y9MzDgHY8N8H9nPuebJ6Vg+u3xnv0Swbxna/Pa2E3HjaBblEIQiK74E01Q==}
     peerDependencies:
       '@egjs/hammerjs': ^2.0.0
       component-emitter: ^1.3.0
@@ -3788,21 +3823,21 @@ snapshots:
     dependencies:
       '@types/hammerjs': 2.0.46
 
-  '@elevenlabs/client@1.17.0(@types/dom-mediacapture-record@1.0.22)':
+  '@elevenlabs/client@1.19.1(@types/dom-mediacapture-record@1.0.22)':
     dependencies:
-      '@elevenlabs/types': 0.19.0
-      livekit-client: 2.16.1(@types/dom-mediacapture-record@1.0.22)
+      '@elevenlabs/types': 0.21.0
+      livekit-client: 2.22.0(@types/dom-mediacapture-record@1.0.22)
     transitivePeerDependencies:
       - '@types/dom-mediacapture-record'
 
-  '@elevenlabs/react@1.12.0(@types/dom-mediacapture-record@1.0.22)(react@19.2.8)':
+  '@elevenlabs/react@1.12.3(@types/dom-mediacapture-record@1.0.22)(react@19.2.8)':
     dependencies:
-      '@elevenlabs/client': 1.17.0(@types/dom-mediacapture-record@1.0.22)
+      '@elevenlabs/client': 1.19.1(@types/dom-mediacapture-record@1.0.22)
       react: 19.2.8
     transitivePeerDependencies:
       - '@types/dom-mediacapture-record'
 
-  '@elevenlabs/types@0.19.0': {}
+  '@elevenlabs/types@0.21.0': {}
 
   '@emnapi/runtime@1.11.3':
     dependencies:
@@ -4152,12 +4187,12 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@langchain/core@1.2.5':
+  '@langchain/core@1.2.8':
     dependencies:
       '@cfworker/json-schema': 4.1.1
       '@standard-schema/spec': 1.1.0
       js-tiktoken: 1.0.21
-      langsmith: 0.8.10
+      langsmith: 0.8.11
       mustache: 4.2.0
       p-queue: 6.6.2
       zod: 4.4.3
@@ -4168,10 +4203,10 @@ snapshots:
       - openai
       - ws
 
-  '@langchain/langgraph-checkpoint-mongodb@1.4.0(@langchain/core@1.2.5)(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.5))':
+  '@langchain/langgraph-checkpoint-mongodb@1.4.0(@langchain/core@1.2.8)(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.8))':
     dependencies:
-      '@langchain/core': 1.2.5
-      '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.5)
+      '@langchain/core': 1.2.8
+      '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.8)
       mongodb: 6.21.0
     transitivePeerDependencies:
       - '@aws-sdk/credential-providers'
@@ -4182,13 +4217,13 @@ snapshots:
       - snappy
       - socks
 
-  '@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.5)':
+  '@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.8)':
     dependencies:
-      '@langchain/core': 1.2.5
+      '@langchain/core': 1.2.8
 
-  '@langchain/langgraph-sdk@1.9.29(@langchain/core@1.2.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@langchain/langgraph-sdk@1.9.29(@langchain/core@1.2.8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@langchain/core': 1.2.5
+      '@langchain/core': 1.2.8
       '@langchain/protocol': 0.0.18
       '@types/json-schema': 7.0.15
       p-queue: 9.3.3
@@ -4197,11 +4232,11 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
-  '@langchain/langgraph@1.4.9(@langchain/core@1.2.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@langchain/langgraph@1.4.10(@langchain/core@1.2.8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
     dependencies:
-      '@langchain/core': 1.2.5
-      '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.5)
-      '@langchain/langgraph-sdk': 1.9.29(@langchain/core@1.2.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@langchain/core': 1.2.8
+      '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.8)
+      '@langchain/langgraph-sdk': 1.9.29(@langchain/core@1.2.8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@langchain/protocol': 0.0.18
       '@standard-schema/spec': 1.1.0
       zod: 4.4.3
@@ -4211,9 +4246,9 @@ snapshots:
       - svelte
       - vue
 
-  '@langchain/mongodb@1.3.0(@langchain/core@1.2.5)':
+  '@langchain/mongodb@1.3.0(@langchain/core@1.2.8)':
     dependencies:
-      '@langchain/core': 1.2.5
+      '@langchain/core': 1.2.8
       mongodb: 6.21.0
     transitivePeerDependencies:
       - '@aws-sdk/credential-providers'
@@ -4228,7 +4263,7 @@ snapshots:
 
   '@livekit/mutex@1.1.1': {}
 
-  '@livekit/protocol@1.42.2':
+  '@livekit/protocol@1.50.4':
     dependencies:
       '@bufbuild/protobuf': 1.10.1
 
@@ -4607,6 +4642,10 @@ snapshots:
     dependencies:
       '@types/webidl-conversions': 7.0.3
 
+  '@types/whatwg-url@13.0.0':
+    dependencies:
+      '@types/webidl-conversions': 7.0.3
+
   '@typescript-eslint/eslint-plugin@8.67.0(@typescript-eslint/parser@8.67.0(eslint@10.8.1(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3))(eslint@10.8.1(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@eslint-community/regexpp': 4.12.2
@@ -4880,6 +4919,8 @@ snapshots:
 
   bson@6.10.4: {}
 
+  bson@7.3.2: {}
+
   buffer-from@1.1.2: {}
 
   bundle-require@5.1.0(esbuild@0.27.7):
@@ -4940,7 +4981,7 @@ snapshots:
       readable-stream: 3.6.2
       typedarray: 0.0.6
 
-  concurrently@10.0.4:
+  concurrently@10.0.5:
     dependencies:
       chalk: 5.6.2
       rxjs: 7.8.2
@@ -5570,7 +5611,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  jose@6.2.8: {}
+  jose@6.2.9: {}
 
   joycon@3.1.1: {}
 
@@ -5631,7 +5672,7 @@ snapshots:
     dependencies:
       json-buffer: 3.0.1
 
-  langsmith@0.8.10:
+  langsmith@0.8.11:
     dependencies:
       p-queue: 6.6.2
 
@@ -5714,16 +5755,15 @@ snapshots:
     dependencies:
       uc.micro: 2.1.0
 
-  livekit-client@2.16.1(@types/dom-mediacapture-record@1.0.22):
+  livekit-client@2.22.0(@types/dom-mediacapture-record@1.0.22):
     dependencies:
       '@livekit/mutex': 1.1.1
-      '@livekit/protocol': 1.42.2
+      '@livekit/protocol': 1.50.4
       '@types/dom-mediacapture-record': 1.0.22
       events: 3.3.0
-      jose: 6.2.8
+      jose: 6.2.9
       loglevel: 1.9.2
       sdp-transform: 2.15.0
-      ts-debounce: 4.0.0
       tslib: 2.8.1
       typed-emitter: 2.1.0
       webrtc-adapter: 9.0.6
@@ -5845,11 +5885,22 @@ snapshots:
       '@types/whatwg-url': 11.0.5
       whatwg-url: 14.2.0
 
+  mongodb-connection-string-url@7.0.2:
+    dependencies:
+      '@types/whatwg-url': 13.0.0
+      whatwg-url: 14.2.0
+
   mongodb@6.21.0:
     dependencies:
       '@mongodb-js/saslprep': 1.4.13
       bson: 6.10.4
       mongodb-connection-string-url: 3.0.2
+
+  mongodb@7.5.0:
+    dependencies:
+      '@mongodb-js/saslprep': 1.4.13
+      bson: 7.3.2
+      mongodb-connection-string-url: 7.0.2
 
   motion-dom@13.0.0:
     dependencies:
@@ -6491,8 +6542,6 @@ snapshots:
     dependencies:
       typescript: 6.0.3
 
-  ts-debounce@4.0.0: {}
-
   ts-interface-checker@0.1.13: {}
 
   tslib@2.8.1: {}
@@ -6606,7 +6655,7 @@ snapshots:
       uuid: 14.0.1
       vis-util: 6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)
 
-  vis-timeline@8.5.3(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)(keycharm@0.4.0)(moment@2.30.1)(propagating-hammerjs@3.0.0(@egjs/hammerjs@2.0.17))(uuid@14.0.1)(vis-data@8.0.5(uuid@14.0.1)(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)))(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1))(xss@1.0.15):
+  vis-timeline@8.5.4(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)(keycharm@0.4.0)(moment@2.30.1)(propagating-hammerjs@3.0.0(@egjs/hammerjs@2.0.17))(uuid@14.0.1)(vis-data@8.0.5(uuid@14.0.1)(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1)))(vis-util@6.0.2(@egjs/hammerjs@2.0.17)(component-emitter@1.3.1))(xss@1.0.15):
     dependencies:
       '@egjs/hammerjs': 2.0.17
       component-emitter: 1.3.1
