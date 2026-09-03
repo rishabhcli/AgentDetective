@@ -35,7 +35,7 @@
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
     "jsdom": "latest",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vite": "latest",
     "vitest": "latest"
   }
