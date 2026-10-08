@@ -28,7 +28,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify:ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: thread-production-bundles
           path: |
@@ -78,7 +78,7 @@ jobs:
         run: pnpm test:integrity
       - name: Upload Playwright diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-diagnostics
           path: |
