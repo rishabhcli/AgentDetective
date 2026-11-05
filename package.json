@@ -37,7 +37,7 @@
     "globals": "latest",
     "prettier": "latest",
     "tsx": "latest",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "typescript-eslint": "latest"
   }
 }
